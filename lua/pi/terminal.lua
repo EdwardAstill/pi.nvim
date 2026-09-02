@@ -314,8 +314,9 @@ end
 ---   in pi's editor for the user to augment before submitting.
 ---@param text string
 ---@param submit boolean Whether to auto-submit or type into the editor
-local function do_send(text, submit)
-  if M.chan == nil then
+---@param cwd string
+local function do_send(text, submit, cwd)
+  if M.chan == nil or M.cwd ~= cwd then
     return
   end
 
@@ -325,7 +326,7 @@ local function do_send(text, submit)
   end
 
   vim.defer_fn(function()
-    if M.chan == nil then
+    if M.chan == nil or M.cwd ~= cwd then
       return
     end
 
@@ -358,11 +359,18 @@ local function wait_and_send(text, submit, attempt, cwd)
   end
 
   vim.defer_fn(function()
-    if M.is_alive() then
-      if not M.is_open() then
-        M.open({ cwd = cwd })
-      end
-      do_send(text, submit)
+    if not M.is_alive() or M.cwd ~= cwd then
+      M.open({ cwd = cwd })
+      wait_and_send(text, submit, attempt + 1, cwd)
+      return
+    end
+
+    if not M.is_open() then
+      M.open({ cwd = cwd })
+    end
+
+    if M.is_alive() and M.cwd == cwd then
+      do_send(text, submit, cwd)
     else
       wait_and_send(text, submit, attempt + 1, cwd)
     end
@@ -378,7 +386,7 @@ function M.send(text, opts)
   local submit = opts.submit ~= false -- default true
   local cwd = opts.cwd or require("pi.project").resolve_cwd()
 
-  if not M.is_alive() then
+  if not M.is_alive() or M.cwd ~= cwd then
     M.open({ cwd = cwd })
     wait_and_send(text, submit, 0, cwd)
     return
@@ -387,11 +395,13 @@ function M.send(text, opts)
   -- Make sure the panel is visible
   if not M.is_open() then
     M.open({ cwd = cwd })
-  elseif cwd ~= M.cwd then
-    M.open({ cwd = cwd })
   end
 
-  do_send(text, submit)
+  if M.is_alive() and M.cwd == cwd then
+    do_send(text, submit, cwd)
+  else
+    wait_and_send(text, submit, 0, cwd)
+  end
 end
 
 --- Send abort signal to pi (Escape key).

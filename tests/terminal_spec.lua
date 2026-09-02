@@ -42,6 +42,63 @@ H.test("opening another cwd replaces the terminal job", function()
   terminal.stop()
 end)
 
+H.test("sending with another cwd replaces a live terminal", function()
+  package.loaded.snacks = nil
+  package.loaded["pi.terminal"] = nil
+  local config = require("pi.config")
+  local terminal = require("pi.terminal")
+  local first = H.tmpdir()
+  local second = H.tmpdir()
+  config.setup({
+    terminal = {
+      cmd = "sh -c 'pwd; sleep 30'",
+      continue_session = false,
+      send_delay = 0,
+      clear_before_send = false,
+    },
+  })
+  terminal.open({ cwd = first })
+  wait_for(terminal.is_alive)
+  local first_buf = terminal.buf
+  terminal.send("prompt", { submit = false, cwd = second })
+  wait_for(function()
+    return terminal.is_alive() and terminal.get_cwd() == second
+  end)
+  H.eq(false, vim.api.nvim_buf_is_valid(first_buf))
+  wait_for(function()
+    return table.concat(vim.api.nvim_buf_get_lines(terminal.buf, 0, -1, false), "\n"):find("prompt", 1, true)
+  end)
+  terminal.stop()
+end)
+
+H.test("deferred send restores its requested cwd after replacement", function()
+  package.loaded.snacks = nil
+  package.loaded["pi.terminal"] = nil
+  local config = require("pi.config")
+  local terminal = require("pi.terminal")
+  local first = H.tmpdir()
+  local second = H.tmpdir()
+  config.setup({
+    terminal = {
+      cmd = "sh -c 'pwd; sleep 30'",
+      continue_session = false,
+      startup_timeout = 200,
+      max_retries = 4,
+      send_delay = 0,
+      clear_before_send = false,
+    },
+  })
+  terminal.send("queued prompt", { submit = false, cwd = first })
+  terminal.open({ cwd = second })
+  wait_for(function()
+    return terminal.is_alive() and terminal.get_cwd() == first
+  end)
+  wait_for(function()
+    return table.concat(vim.api.nvim_buf_get_lines(terminal.buf, 0, -1, false), "\n"):find("queued prompt", 1, true)
+  end)
+  terminal.stop()
+end)
+
 H.test("snacks terminal receives the explicit cwd", function()
   local root = H.tmpdir()
   local received
