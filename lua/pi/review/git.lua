@@ -30,9 +30,20 @@ local function git_error(operation, message)
   }
 end
 
+local function strip_line_ending(output)
+  output = output or ""
+  if output:sub(-2) == "\r\n" then
+    return output:sub(1, -3)
+  end
+  if output:sub(-1) == "\n" then
+    return output:sub(1, -2)
+  end
+  return output
+end
+
 local function discover(cwd, runner)
   local result = runner({ "git", "rev-parse", "--show-toplevel" }, { cwd = cwd })
-  local root = (result.stdout or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local root = strip_line_ending(result.stdout)
   if result.code ~= 0 or root == "" then
     local kind = (result.code == 128 or root == "") and "not_git" or "git"
     return nil, failure(kind, "discover_root", result)
@@ -98,6 +109,33 @@ function Git:_path(path, operation)
     return nil, nil, git_error(operation, "path escapes the repository: " .. path)
   end
   return normalized, absolute, nil
+end
+
+function Git:_validate_restore_ancestors(path, operation)
+  local ancestors = { self.root }
+  local current = self.root
+  local segments = vim.split(path, "/", { plain = true })
+  for index = 1, #segments - 1 do
+    current = current .. "/" .. segments[index]
+    ancestors[#ancestors + 1] = current
+  end
+
+  for _, ancestor in ipairs(ancestors) do
+    local stat, stat_err = vim.uv.fs_lstat(ancestor)
+    if not stat then
+      if stat_err and not stat_err:find("ENOENT", 1, true) then
+        return nil, git_error(operation, stat_err)
+      end
+      return true, nil
+    end
+    if stat.type == "link" then
+      return nil, git_error(operation, "refusing symlinked ancestor: " .. ancestor)
+    end
+    if stat.type ~= "directory" then
+      return nil, git_error(operation, "refusing non-directory ancestor: " .. ancestor)
+    end
+  end
+  return true, nil
 end
 
 function Git:snapshot()
@@ -378,7 +416,7 @@ function Git:_nested_worktree(path, operation)
     { "git", "-C", path, "rev-parse", "--show-toplevel" },
     { cwd = self.root }
   )
-  local nested_root = (top.stdout or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local nested_root = strip_line_ending(top.stdout)
   if top.code ~= 0 or vim.fs.normalize(nested_root) ~= vim.fs.normalize(path) then
     return nil, git_error(operation, path .. " is not an initialized submodule")
   end
@@ -428,6 +466,10 @@ function Git:restore_path(tree, path)
   local normalized, absolute, path_err = self:_path(path, "restore_path")
   if not normalized then
     return nil, path_err
+  end
+  local ancestors_ok, ancestor_err = self:_validate_restore_ancestors(normalized, "restore_path")
+  if not ancestors_ok then
+    return nil, ancestor_err
   end
   local entry, err = self:entry(tree, normalized)
   if err then
