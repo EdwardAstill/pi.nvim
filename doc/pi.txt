@@ -81,6 +81,22 @@ defaults are shown below.
       clear_before_send = true,    -- send Ctrl-C before pasting
     },
 
+    project = {
+      cwd = nil,                    -- fixed path, or current cwd
+    },
+
+    review = {
+      enabled = true,
+      save_before_prompt = true,
+      keymaps = {
+        accept_hunk = "a",
+        reject_hunk = "r",
+        accept_file = "A",
+        reject_file = "R",
+        close = "q",
+      },
+    },
+
     prompts = {
       explain  = { text = "Explain @this and its context", submit = true },
       review   = { text = "Review @this for correctness and readability", submit = true },
@@ -163,8 +179,27 @@ Abort ~
   :Pi prompt {text}     Send arbitrary text as a prompt
   :Pi select            Open the action picker
   :Pi abort             Abort Pi's current operation
+  :Pi checkpoint        Capture a checkpoint before a prompt typed in Pi
+  :Pi review            Review unaccepted changes in a native diff
+  :Pi review turn       Audit changes since the latest turn checkpoint
+  :Pi review session    Audit changes since the Pi project session began
+  :Pi accept {target}   Accept hunk, file, or all pending changes
+  :Pi reject {target}   Reject the current hunk or file
+  :Pi status            Show turn and pending file/hunk counts
 
   Tab completion is available for subcommands and prompt names.
+
+Review keymaps ~
+  Pending review buffers use `a`/`r` to accept/reject the current hunk,
+  `A`/`R` to accept/reject the current file, and `q` to close. Turn and
+  session reviews are read-only.
+
+Review safety ~
+  pi.nvim captures Git trees through a temporary index. It never changes the
+  repository's real index. The session baseline includes pre-existing tracked
+  and untracked worktree changes, so pending review starts clean. Submitted
+  plugin prompts save modified project buffers and checkpoint automatically;
+  use `:Pi checkpoint` before prompts typed directly into Pi's TUI.
 
 ==============================================================================
 7. KEYMAPS                                                     *pi-keymaps*

@@ -1,6 +1,6 @@
 # pi.nvim
 
-Neovim plugin that integrates the [Pi](https://pi.dev) coding agent into a side panel with bidirectional context passing — select code in Neovim and send it to Pi with a single keypress.
+Neovim plugin that runs the real [Pi](https://pi.dev) TUI in a side panel, passes editor context to it, and reviews its file changes with native Neovim diffs.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ Neovim plugin that integrates the [Pi](https://pi.dev) coding agent into a side 
 
 ```lua
 {
-  "kurochenko/pi.nvim",
+  dir = vim.fn.expand("~/Projects/pi.nvim"),
   dependencies = {
     { "folke/snacks.nvim", optional = true },
   },
@@ -59,6 +59,17 @@ require("pi").setup({
 
 5. **Commands**: `:Pi toggle`, `:Pi ask <text>`, `:Pi prompt explain`, `:Pi select`, `:Pi abort`
 
+### Change review
+
+Prompts submitted through the plugin automatically save modified project buffers and capture a turn checkpoint. Before typing a prompt directly into Pi's TUI, run `:Pi checkpoint`.
+
+- `:Pi review` reviews changes that have not been accepted yet.
+- `:Pi review turn` and `:Pi review session` open read-only audit diffs.
+- In a pending review, use `a`/`r` for the current hunk, `A`/`R` for the current file, and `q` to close.
+- `:Pi accept all` accepts every pending file. `:Pi status` shows the turn and pending file/hunk counts.
+
+Accepting changes only updates pi.nvim's private baseline; rejecting changes updates the working tree. Checkpoints use a temporary Git index and never read from or write to your real Git index. Existing uncommitted and untracked files are included in the initial accepted baseline, so they are not presented as Pi changes.
+
 ### Context Placeholders
 
 Prompts can include `@placeholders` that are resolved from your editor state:
@@ -87,6 +98,22 @@ require("pi").setup({
     cmd = "pi",               -- pi executable
     continue_session = true,  -- pass -c flag (continue previous session)
     auto_start = false,       -- open panel on setup
+  },
+
+  project = {
+    cwd = nil,                  -- fixed path, or Neovim's cwd when nil
+  },
+
+  review = {
+    enabled = true,
+    save_before_prompt = true,
+    keymaps = {
+      accept_hunk = "a",
+      reject_hunk = "r",
+      accept_file = "A",
+      reject_file = "R",
+      close = "q",
+    },
   },
 
   prompts = {
@@ -137,12 +164,12 @@ pi.nvim uses `<leader>p` prefix keymaps by default, which don't conflict with op
 
 ## Architecture
 
-Pi runs in an embedded Neovim terminal buffer. When you trigger a prompt:
+Pi runs in an embedded Neovim terminal buffer rooted at the configured project directory. When you trigger a prompt:
 1. Your selection/context is captured from the editor
 2. `@placeholders` in the prompt are resolved to actual code content
-3. The resolved text is injected into pi's TUI editor via [bracketed paste](https://en.wikipedia.org/wiki/Bracketed-paste)
-4. Pi processes the prompt and you see the response in its TUI panel
-5. When pi edits files, Neovim auto-detects changes via `checktime`
+3. Modified project buffers are saved and a private Git-tree checkpoint is captured
+4. The resolved text is injected into pi's TUI editor via [bracketed paste](https://en.wikipedia.org/wiki/Bracketed-paste)
+5. Pi processes the prompt and you can review its edits against the checkpoint
 
 ## License
 
