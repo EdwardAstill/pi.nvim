@@ -1,4 +1,77 @@
 local M = {}
+local warned_non_git = {}
+
+local function notify_error(prefix, err)
+  vim.notify("Pi: " .. prefix .. ": " .. (err.message or tostring(err)), vim.log.levels.ERROR)
+end
+
+local function project_boundary(cwd)
+  local root, err = require("pi.review.git").discover_root(cwd)
+  if root then
+    return root
+  end
+  if err and err.kind ~= "not_git" then
+    return nil, err
+  end
+  return cwd, nil
+end
+
+--- Save, checkpoint, then send submitted text to Pi.
+---@param text string
+---@param opts? { submit?: boolean }
+---@return boolean
+function M._submit(text, opts)
+  opts = opts or {}
+  local submit = opts.submit ~= false
+  local config = require("pi.config")
+  local project = require("pi.project")
+  local checkpoint = require("pi.checkpoint")
+  local cwd = project.resolve_cwd()
+
+  if submit and config.opts.review.save_before_prompt then
+    local boundary, boundary_err = project_boundary(cwd)
+    if not boundary then
+      notify_error("cannot resolve project", boundary_err)
+      return false
+    end
+    local saved, save_err = project.save_modified(boundary)
+    if not saved then
+      vim.notify("Pi: " .. save_err, vim.log.levels.ERROR)
+      return false
+    end
+  end
+
+  if submit and config.opts.review.enabled then
+    local tracked, track_err = checkpoint.start_turn(cwd)
+    if track_err then
+      notify_error("checkpoint failed", track_err)
+      return false
+    end
+    if not tracked and not warned_non_git[cwd] then
+      warned_non_git[cwd] = true
+      vim.notify("Pi: review unavailable outside a Git worktree", vim.log.levels.WARN)
+    end
+  end
+
+  require("pi.terminal").send(text, { submit = submit, cwd = cwd })
+  return true
+end
+
+local function ensure_terminal_session()
+  local cwd = require("pi.project").resolve_cwd()
+  local terminal = require("pi.terminal")
+  if terminal.get_cwd and terminal.get_cwd() and terminal.get_cwd() ~= cwd then
+    terminal.stop()
+    require("pi.checkpoint").reset()
+  end
+  if require("pi.config").opts.review.enabled then
+    local _, ensure_err = require("pi.checkpoint").ensure(cwd)
+    if ensure_err then
+      notify_error("checkpoint failed", ensure_err)
+    end
+  end
+  return cwd
+end
 
 --- Set up pi.nvim with user configuration.
 ---@param opts? pi.Config
@@ -10,14 +83,14 @@ function M.setup(opts)
   if config.opts.terminal.auto_start then
     -- Defer to ensure Neovim UI is fully initialized
     vim.schedule(function()
-      require("pi.terminal").open()
+      require("pi.terminal").open({ cwd = ensure_terminal_session() })
     end)
   end
 end
 
 --- Toggle the pi terminal panel.
 function M.toggle()
-  require("pi.terminal").toggle()
+  require("pi.terminal").toggle({ cwd = ensure_terminal_session() })
 end
 
 --- Open an input prompt, resolve context placeholders, and send to pi.
@@ -39,7 +112,7 @@ function M.ask(default_text, opts)
   if opts.submit then
     local resolved = context_mod.resolve(default_text, ctx)
     ctx:clear()
-    terminal.send(resolved)
+    M._submit(resolved, { submit = true })
     return
   end
 
@@ -65,7 +138,7 @@ function M.ask(default_text, opts)
       end
       local resolved = context_mod.resolve(input, ctx)
       ctx:clear()
-      terminal.send(resolved)
+      M._submit(resolved, { submit = true })
     end)
   else
     vim.ui.input(input_opts, function(input)
@@ -75,7 +148,7 @@ function M.ask(default_text, opts)
       end
       local resolved = context_mod.resolve(input, ctx)
       ctx:clear()
-      terminal.send(resolved)
+      M._submit(resolved, { submit = true })
     end)
   end
 end
@@ -93,15 +166,19 @@ function M.prompt(text, opts)
 
   -- Check if text is a named prompt key
   local prompt_def = config.opts.prompts[text]
+  local submit = opts.submit
   if prompt_def then
     text = prompt_def.text
+    if submit == nil then
+      submit = prompt_def.submit
+    end
   end
 
   local ctx = opts.context or context_mod.Context.new()
   local resolved = context_mod.resolve(text, ctx)
   ctx:clear()
   -- Default: submit (press Enter). Pass submit=false to just paste without submitting.
-  terminal.send(resolved, { submit = opts.submit ~= false })
+  M._submit(resolved, { submit = submit ~= false })
 end
 
 --- Open a picker to select from available prompts and actions.
@@ -122,6 +199,7 @@ function M.select()
       kind = "prompt",
       name = name,
       text = def.text,
+      submit = def.submit,
     }
   end
 
@@ -156,7 +234,7 @@ function M.select()
     if selected.kind == "prompt" then
       local resolved = context_mod.resolve(selected.text, ctx)
       ctx:clear()
-      require("pi.terminal").send(resolved)
+      M._submit(resolved, { submit = selected.submit ~= false })
     elseif selected.kind == "control" then
       ctx:clear()
       if selected.action == "abort" then
@@ -185,8 +263,40 @@ function M.send_context()
   ctx:clear()
 
   if ref then
-    terminal.send(ref, { submit = false })
+    M._submit(ref, { submit = false })
   end
+end
+
+--- Capture a manual turn checkpoint for prompts typed directly in Pi.
+---@return boolean
+function M.checkpoint()
+  local config = require("pi.config")
+  local project = require("pi.project")
+  local checkpoint = require("pi.checkpoint")
+  local cwd = project.resolve_cwd()
+  if config.opts.review.save_before_prompt then
+    local boundary, boundary_err = project_boundary(cwd)
+    if not boundary then
+      notify_error("cannot resolve project", boundary_err)
+      return false
+    end
+    local saved, save_err = project.save_modified(boundary)
+    if not saved then
+      vim.notify("Pi: " .. save_err, vim.log.levels.ERROR)
+      return false
+    end
+  end
+  local tracked, track_err = checkpoint.start_turn(cwd)
+  if track_err then
+    notify_error("checkpoint failed", track_err)
+    return false
+  end
+  if not tracked then
+    vim.notify("Pi: review requires a Git worktree", vim.log.levels.WARN)
+    return false
+  end
+  vim.notify(string.format("Pi: checkpoint %d captured", checkpoint.state().turn_number))
+  return true
 end
 
 --- Create an operator function for dot-repeat support.
