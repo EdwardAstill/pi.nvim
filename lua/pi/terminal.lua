@@ -8,6 +8,8 @@ M.buf = nil
 M.win = nil
 ---@type integer|nil Terminal job channel id (for chansend)
 M.chan = nil
+---@type string|nil Terminal working directory
+M.cwd = nil
 
 --- Snacks.nvim detection
 ---@type boolean, table
@@ -43,6 +45,7 @@ local function reset_state()
   M.buf = nil
   M.win = nil
   M.chan = nil
+  M.cwd = nil
   snacks_term = nil
 end
 
@@ -54,16 +57,24 @@ local function setup_autocmds(buf)
   vim.api.nvim_create_autocmd("BufDelete", {
     group = group,
     buffer = buf,
-    callback = reset_state,
+    callback = function(args)
+      if M.buf == args.buf then
+        reset_state()
+      end
+    end,
     desc = "pi.nvim: reset terminal state on buffer delete",
   })
 
   vim.api.nvim_create_autocmd("TermClose", {
     group = group,
     buffer = buf,
-    callback = function()
+    callback = function(args)
       -- Defer so the buffer can be cleaned up
-      vim.schedule(reset_state)
+      vim.schedule(function()
+        if M.buf == args.buf then
+          reset_state()
+        end
+      end)
     end,
     desc = "pi.nvim: reset terminal state on process exit",
   })
@@ -72,7 +83,8 @@ end
 --- Open the terminal panel using snacks.terminal.
 ---@param cmd string
 ---@param enter boolean
-local function open_snacks(cmd, enter)
+---@param cwd string
+local function open_snacks(cmd, enter, cwd)
   local pos = config.opts.terminal.position
   local snacks_opts = {
     win = {
@@ -81,6 +93,7 @@ local function open_snacks(cmd, enter)
       wo = { winbar = "" },
     },
     bo = { filetype = "pi_terminal" },
+    cwd = cwd,
   }
 
   if pos == "bottom" then
@@ -102,6 +115,7 @@ local function open_snacks(cmd, enter)
     M.win = snacks_term.win
     -- Find the terminal channel from the buffer
     M.chan = vim.bo[M.buf].channel
+    M.cwd = cwd
     setup_autocmds(M.buf)
   else
     vim.notify("Pi: snacks.terminal.open returned unexpected result", vim.log.levels.ERROR)
@@ -112,7 +126,8 @@ end
 --- Open the terminal panel using manual split + termopen.
 ---@param cmd string
 ---@param enter boolean
-local function open_manual(cmd, enter)
+---@param cwd string
+local function open_manual(cmd, enter, cwd)
   local pos = config.opts.terminal.position
   local size = split_size()
   local source_win = vim.api.nvim_get_current_win()
@@ -126,7 +141,8 @@ local function open_manual(cmd, enter)
   end
 
   M.win = vim.api.nvim_get_current_win()
-  M.chan = vim.fn.termopen(cmd)
+  M.chan = vim.fn.termopen(cmd, { cwd = cwd })
+  M.cwd = cwd
   M.buf = vim.api.nvim_get_current_buf()
 
   vim.bo[M.buf].filetype = "pi_terminal"
@@ -201,11 +217,22 @@ function M.is_alive()
   return M.buf ~= nil and vim.api.nvim_buf_is_valid(M.buf) and M.chan ~= nil
 end
 
+--- Get the current terminal working directory.
+---@return string|nil
+function M.get_cwd()
+  return M.cwd
+end
+
 --- Open the pi terminal panel.
----@param opts? { enter?: boolean }
+---@param opts? { enter?: boolean, cwd?: string }
 function M.open(opts)
   opts = opts or {}
   local enter = opts.enter ~= nil and opts.enter or false
+  local cwd = opts.cwd or require("pi.project").resolve_cwd()
+
+  if cwd ~= M.cwd then
+    M.stop()
+  end
 
   -- Already open and visible — just focus if requested
   if M.is_open() then
@@ -227,9 +254,9 @@ function M.open(opts)
   local cmd = build_cmd()
 
   if has_snacks then
-    open_snacks(cmd, enter)
+    open_snacks(cmd, enter, cwd)
   else
-    open_manual(cmd, enter)
+    open_manual(cmd, enter, cwd)
   end
 end
 
@@ -241,12 +268,35 @@ function M.close()
   end
 end
 
+--- Stop the terminal process and discard its buffer.
+function M.stop()
+  pcall(M.close)
+
+  if M.chan and M.chan > 0 then
+    local ok, status = pcall(vim.fn.jobwait, { M.chan }, 0)
+    if ok and status[1] == -1 then
+      pcall(vim.fn.jobstop, M.chan)
+    end
+  end
+
+  if M.buf and vim.api.nvim_buf_is_valid(M.buf) then
+    pcall(vim.api.nvim_buf_delete, M.buf, { force = true })
+  end
+
+  if snacks_term and snacks_term.close then
+    pcall(snacks_term.close, snacks_term)
+  end
+
+  reset_state()
+end
+
 --- Toggle the terminal panel.
-function M.toggle()
+---@param opts? { cwd?: string }
+function M.toggle(opts)
   if M.is_open() then
     M.close()
   else
-    M.open()
+    M.open(opts)
   end
 end
 
@@ -294,7 +344,8 @@ end
 ---@param text string
 ---@param submit boolean
 ---@param attempt integer
-local function wait_and_send(text, submit, attempt)
+---@param cwd string
+local function wait_and_send(text, submit, attempt, cwd)
   local max_retries = config.opts.terminal.max_retries
   local delay = math.floor(config.opts.terminal.startup_timeout / max_retries)
 
@@ -309,11 +360,11 @@ local function wait_and_send(text, submit, attempt)
   vim.defer_fn(function()
     if M.is_alive() then
       if not M.is_open() then
-        M.open()
+        M.open({ cwd = cwd })
       end
       do_send(text, submit)
     else
-      wait_and_send(text, submit, attempt + 1)
+      wait_and_send(text, submit, attempt + 1, cwd)
     end
   end, delay)
 end
@@ -321,20 +372,23 @@ end
 --- Send a prompt to pi via bracketed paste.
 --- If the terminal isn't running, starts it and polls until ready (with timeout).
 ---@param text string
----@param opts? { submit?: boolean } Whether to press Enter after pasting (default true)
+---@param opts? { submit?: boolean, cwd?: string } Whether to press Enter after pasting (default true)
 function M.send(text, opts)
   opts = opts or {}
   local submit = opts.submit ~= false -- default true
+  local cwd = opts.cwd or require("pi.project").resolve_cwd()
 
   if not M.is_alive() then
-    M.open()
-    wait_and_send(text, submit, 0)
+    M.open({ cwd = cwd })
+    wait_and_send(text, submit, 0, cwd)
     return
   end
 
   -- Make sure the panel is visible
   if not M.is_open() then
-    M.open()
+    M.open({ cwd = cwd })
+  elseif cwd ~= M.cwd then
+    M.open({ cwd = cwd })
   end
 
   do_send(text, submit)

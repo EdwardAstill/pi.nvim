@@ -1,6 +1,6 @@
 local helpers = require("tests.helpers")
 
-for _, spec in ipairs({ "config_spec", "project_spec" }) do
+for _, spec in ipairs({ "config_spec", "project_spec", "terminal_spec" }) do
   require("tests." .. spec)
 end
 
