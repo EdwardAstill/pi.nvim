@@ -5,6 +5,23 @@
 ---@field ask pi.Config.Ask
 ---@field keymaps table<string, string|false>
 ---@field events pi.Config.Events
+---@field project pi.Config.Project
+---@field review pi.Config.Review
+
+---@class pi.Config.Project
+---@field cwd? string Fixed project directory, or current directory when nil
+
+---@class pi.Config.ReviewKeymaps
+---@field accept_hunk? string
+---@field reject_hunk? string
+---@field accept_file? string
+---@field reject_file? string
+---@field close? string
+
+---@class pi.Config.Review
+---@field enabled boolean
+---@field save_before_prompt boolean
+---@field keymaps pi.Config.ReviewKeymaps
 
 ---@class pi.Config.Terminal
 ---@field position "left"|"right"|"bottom"
@@ -81,6 +98,22 @@ M.defaults = {
   events = {
     reload = true,
   },
+
+  project = {
+    cwd = nil,
+  },
+
+  review = {
+    enabled = true,
+    save_before_prompt = true,
+    keymaps = {
+      accept_hunk = "a",
+      reject_hunk = "r",
+      accept_file = "A",
+      reject_file = "R",
+      close = "q",
+    },
+  },
 }
 
 -- Initialize opts with defaults so the plugin works even if setup() is never called.
@@ -100,6 +133,8 @@ local function validate(opts)
     ask = { opts.ask, "table" },
     keymaps = { opts.keymaps, "table" },
     events = { opts.events, "table" },
+    project = { opts.project, "table" },
+    review = { opts.review, "table" },
   })
 
   vim.validate({
@@ -142,12 +177,26 @@ local function validate(opts)
       "positive integer",
     },
     ["terminal.clear_before_send"] = { opts.terminal.clear_before_send, "boolean" },
+    ["project.cwd"] = {
+      opts.project.cwd,
+      function(v)
+        return v == nil or type(v) == "string"
+      end,
+      "string or nil",
+    },
+    ["review.enabled"] = { opts.review.enabled, "boolean" },
+    ["review.save_before_prompt"] = { opts.review.save_before_prompt, "boolean" },
+    ["review.keymaps"] = { opts.review.keymaps, "table" },
   })
 
   vim.validate({
     ["ask.prompt"] = { opts.ask.prompt, "string" },
     ["events.reload"] = { opts.events.reload, "boolean" },
   })
+
+  for key, value in pairs(opts.review.keymaps) do
+    vim.validate({ ["review.keymaps." .. key] = { value, "string" } })
+  end
 end
 
 --- Merge user options with defaults.
@@ -179,6 +228,15 @@ function M.setup(user_opts)
     for key, val in pairs(user_opts.keymaps) do
       if val == false then
         M.opts.keymaps[key] = nil
+      end
+    end
+  end
+
+  -- Allow disabling individual review keymaps by setting them to false
+  if user_opts and user_opts.review and user_opts.review.keymaps then
+    for key, val in pairs(user_opts.review.keymaps) do
+      if val == false then
+        M.opts.review.keymaps[key] = nil
       end
     end
   end
