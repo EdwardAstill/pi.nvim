@@ -90,4 +90,3 @@ H.test("checkpoint rejects a file and degrades cleanly outside Git", function()
   H.eq(nil, track_err)
   checkpoint.cleanup()
 end)
-

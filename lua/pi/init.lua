@@ -299,6 +299,61 @@ function M.checkpoint()
   return true
 end
 
+--- Open a native diff review. Pending review is mutable; turn and session are audits.
+---@param scope? "pending"|"turn"|"session"
+---@return boolean
+function M.review(scope)
+  local cwd = require("pi.project").resolve_cwd()
+  local state, ensure_err = require("pi.checkpoint").ensure(cwd)
+  if not state then
+    notify_error("checkpoint failed", ensure_err)
+    return false
+  end
+  return require("pi.review").open(scope)
+end
+
+--- Accept a review hunk, file, or all pending changes.
+---@param target "hunk"|"file"|"all"
+---@return boolean
+function M.accept(target)
+  return require("pi.review").accept(target)
+end
+
+--- Reject a review hunk or file.
+---@param target "hunk"|"file"
+---@return boolean
+function M.reject(target)
+  return require("pi.review").reject(target)
+end
+
+--- Show review status for the configured project.
+---@return table|nil
+function M.status()
+  local cwd = require("pi.project").resolve_cwd()
+  local state, ensure_err = require("pi.checkpoint").ensure(cwd)
+  if not state then
+    notify_error("checkpoint failed", ensure_err)
+    return nil
+  end
+  local status, status_err = require("pi.checkpoint").status()
+  if not status then
+    notify_error("status failed", status_err)
+    return nil
+  end
+  if not status.available then
+    vim.notify(string.format("Pi: %s — review unavailable (not a Git worktree)", status.cwd))
+  else
+    vim.notify(string.format(
+      "Pi: %s — turn %d, %d pending files, %d hunks",
+      status.cwd,
+      status.turn_number,
+      status.pending_files,
+      status.pending_hunks
+    ))
+  end
+  return status
+end
+
 --- Create an operator function for dot-repeat support.
 --- Usage: vim.keymap.set("n", "gp", function() return require("pi").operator("@this: ") end, { expr = true })
 ---@param prefix string Text to prepend to the prompt
