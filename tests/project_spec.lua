@@ -20,6 +20,11 @@ H.test("is_within rejects sibling prefix collisions", function()
   H.eq(false, project.is_within("/tmp/app", "/tmp/application/a.lua"))
 end)
 
+H.test("is_within treats filesystem root as a boundary", function()
+  local project = require("pi.project")
+  H.eq(true, project.is_within("/", "/tmp/file"))
+end)
+
 H.test("save_modified writes only normal buffers inside the boundary", function()
   local project = require("pi.project")
   local root = H.tmpdir()

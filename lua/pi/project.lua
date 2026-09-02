@@ -21,7 +21,7 @@ end
 function M.is_within(root, path)
   root = normalize(root)
   path = normalize(path)
-  return path == root or vim.startswith(path, root .. "/")
+  return path == root or (root == "/" and vim.startswith(path, "/")) or vim.startswith(path, root .. "/")
 end
 
 function M.save_modified(root)
