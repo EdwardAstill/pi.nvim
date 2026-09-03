@@ -1,309 +1,218 @@
 local M = {}
-local warned_non_git = {}
 
 local function notify_error(prefix, err)
-  vim.notify("Pi: " .. prefix .. ": " .. (err.message or tostring(err)), vim.log.levels.ERROR)
+  local message = type(err) == "table" and err.message or tostring(err)
+  vim.notify("Pi: " .. prefix .. ": " .. message, vim.log.levels.ERROR)
+end
+
+local function project_cwd()
+  return require("pi.project").resolve_cwd()
 end
 
 local function project_boundary(cwd)
-  local root, err = require("pi.review.git").discover_root(cwd)
+  local root, root_err = require("pi.review.git").discover_root(cwd)
   if root then
-    return root
+    return root, nil
   end
-  if err and err.kind ~= "not_git" then
-    return nil, err
+  if root_err and root_err.kind ~= "not_git" then
+    return nil, root_err
   end
   return cwd, nil
 end
 
---- Save, checkpoint, then send submitted text to Pi.
----@param text string
----@param opts? { submit?: boolean }
----@return boolean
-function M._submit(text, opts)
-  opts = opts or {}
-  local submit = opts.submit ~= false
-  local config = require("pi.config")
-  local project = require("pi.project")
-  local checkpoint = require("pi.checkpoint")
-  local cwd = project.resolve_cwd()
-
-  if submit and config.opts.review.save_before_prompt then
-    local boundary, boundary_err = project_boundary(cwd)
-    if not boundary then
-      notify_error("cannot resolve project", boundary_err)
-      return false
-    end
-    local saved, save_err = project.save_modified(boundary)
-    if not saved then
-      vim.notify("Pi: " .. save_err, vim.log.levels.ERROR)
-      return false
-    end
+local function capture_context(opts)
+  if opts and opts.context then
+    return opts.context
   end
-
-  if submit and config.opts.review.enabled then
-    local tracked, track_err = checkpoint.start_turn(cwd)
-    if track_err then
-      notify_error("checkpoint failed", track_err)
-      return false
-    end
-    if not tracked and not warned_non_git[cwd] then
-      warned_non_git[cwd] = true
-      vim.notify("Pi: review unavailable outside a Git worktree", vim.log.levels.WARN)
-    end
+  local context, context_err = require("pi.codecompanion").capture_context(opts and opts.context_opts)
+  if not context then
+    notify_error("cannot capture editor context", context_err)
   end
+  return context
+end
 
-  require("pi.terminal").send(text, { submit = submit, cwd = cwd })
+local function frontend_result(action, ...)
+  local bridge = require("pi.codecompanion")
+  local ok, result, frontend_err = pcall(bridge[action], ...)
+  if not ok then
+    notify_error(action .. " failed", result)
+    return false
+  end
+  if not result then
+    notify_error(action .. " failed", frontend_err or "frontend unavailable")
+    return false
+  end
   return true
 end
 
-local function ensure_terminal_session()
-  local cwd = require("pi.project").resolve_cwd()
-  local terminal = require("pi.terminal")
-  if terminal.get_cwd and terminal.get_cwd() and terminal.get_cwd() ~= cwd then
-    terminal.stop()
-    require("pi.checkpoint").reset()
+--- Route text into CodeCompanion. Checkpointing is owned by on_before_submit.
+---@param text string
+---@param opts? { submit?: boolean, context?: table, context_opts?: table }
+---@return boolean
+function M._submit(text, opts)
+  opts = opts or {}
+  local context = capture_context(opts)
+  if not context then
+    return false
   end
-  if require("pi.config").opts.review.enabled then
-    local _, ensure_err = require("pi.checkpoint").ensure(cwd)
-    if ensure_err then
-      notify_error("checkpoint failed", ensure_err)
-    end
-  end
-  return cwd
+  local action = opts.submit == false and "compose" or "prompt"
+  return frontend_result(action, text, {
+    cwd = project_cwd(),
+    context = context,
+  })
 end
 
---- Set up pi.nvim with user configuration.
 ---@param opts? pi.Config
 function M.setup(opts)
-  local config = require("pi.config")
-  config.setup(opts)
+  require("pi.config").setup(opts)
+  require("pi.lifecycle").setup()
   M._setup_keymaps()
-
-  if config.opts.terminal.auto_start then
-    -- Defer to ensure Neovim UI is fully initialized
-    vim.schedule(function()
-      require("pi.terminal").open({ cwd = ensure_terminal_session() })
-    end)
-  end
 end
 
---- Toggle the pi terminal panel.
+--- Toggle the project Pi chat without stopping its ACP process.
+---@return boolean
 function M.toggle()
-  require("pi.terminal").toggle({ cwd = ensure_terminal_session() })
+  return frontend_result("toggle", project_cwd())
 end
 
---- Open an input prompt, resolve context placeholders, and send to pi.
---- In visual mode, captures the selection as @this context.
----@param default_text? string Pre-filled text (e.g. "@this: ")
----@param opts? { submit?: boolean, context?: pi.Context }
+--- Restore and focus the project composer.
+---@return boolean
+function M.focus()
+  return frontend_result("focus", project_cwd())
+end
+
+--- Open the native composer with optional initial text.
+---@param default_text? string
+---@param opts? { submit?: boolean, context?: table, context_opts?: table }
+---@return boolean
 function M.ask(default_text, opts)
   opts = opts or {}
-  default_text = default_text or ""
-
-  local context_mod = require("pi.context")
-  local terminal = require("pi.terminal")
-  local config = require("pi.config")
-
-  -- Capture context before opening input (preserves visual selection)
-  local ctx = opts.context or context_mod.Context.new()
-
-  -- If submit is true, skip the input dialog
-  if opts.submit then
-    local resolved = context_mod.resolve(default_text, ctx)
-    ctx:clear()
-    M._submit(resolved, { submit = true })
-    return
-  end
-
-  -- Open input prompt
-  local input_opts = {
-    prompt = config.opts.ask.prompt,
-    default = default_text,
-  }
-
-  local has_snacks, Snacks = pcall(require, "snacks")
-  if has_snacks and Snacks.input then
-    local snacks_opts = vim.tbl_deep_extend("force", {
-      prompt = config.opts.ask.prompt,
-      default = default_text,
-      win = config.opts.ask.snacks or {},
-    }, {})
-
-    Snacks.input(snacks_opts, function(input)
-      if input == nil then
-        -- Cancelled
-        ctx:resume()
-        return
-      end
-      local resolved = context_mod.resolve(input, ctx)
-      ctx:clear()
-      M._submit(resolved, { submit = true })
-    end)
-  else
-    vim.ui.input(input_opts, function(input)
-      if input == nil then
-        ctx:resume()
-        return
-      end
-      local resolved = context_mod.resolve(input, ctx)
-      ctx:clear()
-      M._submit(resolved, { submit = true })
-    end)
-  end
+  return M._submit(default_text or "", {
+    submit = opts.submit == true,
+    context = opts.context,
+    context_opts = opts.context_opts,
+  })
 end
 
---- Send a prompt directly to pi (no input dialog).
---- If text matches a named prompt from config, it expands it.
+--- Submit a direct prompt or open a configured draft prompt.
 ---@param text string
----@param opts? { context?: pi.Context, submit?: boolean }
+---@param opts? { context?: table, context_opts?: table, submit?: boolean }
+---@return boolean
 function M.prompt(text, opts)
   opts = opts or {}
-
-  local config = require("pi.config")
-  local context_mod = require("pi.context")
-  local terminal = require("pi.terminal")
-
-  -- Check if text is a named prompt key
-  local prompt_def = config.opts.prompts[text]
+  local prompt = require("pi.config").opts.prompts[text]
   local submit = opts.submit
-  if prompt_def then
-    text = prompt_def.text
+  if prompt then
+    text = prompt.text
     if submit == nil then
-      submit = prompt_def.submit
+      submit = prompt.submit
     end
   end
-
-  local ctx = opts.context or context_mod.Context.new()
-  local resolved = context_mod.resolve(text, ctx)
-  ctx:clear()
-  -- Default: submit (press Enter). Pass submit=false to just paste without submitting.
-  M._submit(resolved, { submit = submit ~= false })
+  return M._submit(text, {
+    submit = submit ~= false,
+    context = opts.context,
+    context_opts = opts.context_opts,
+  })
 end
 
---- Open a picker to select from available prompts and actions.
+--- Select a configured prompt or control action.
 function M.select()
-  local config = require("pi.config")
-  local context_mod = require("pi.context")
-
-  -- Capture context before opening picker
-  local ctx = context_mod.Context.new()
-
-  -- Build items list
+  local context = capture_context()
+  if not context then
+    return false
+  end
   local items = {}
-
-  -- Add prompts section
-  for name, def in pairs(config.opts.prompts) do
+  for name, prompt in pairs(require("pi.config").opts.prompts) do
     items[#items + 1] = {
-      label = name .. ": " .. def.text,
-      kind = "prompt",
+      label = name .. ": " .. prompt.text,
       name = name,
-      text = def.text,
-      submit = def.submit,
+      text = prompt.text,
+      submit = prompt.submit,
     }
   end
+  table.sort(items, function(left, right) return left.name < right.name end)
+  items[#items + 1] = { label = "[control] abort", action = "abort" }
+  items[#items + 1] = { label = "[control] toggle", action = "toggle" }
 
-  -- Sort prompts alphabetically
-  table.sort(items, function(a, b)
-    return a.name < b.name
-  end)
-
-  -- Add control actions
-  items[#items + 1] = { label = "[control] abort: Cancel pi's current operation", kind = "control", action = "abort" }
-  items[#items + 1] = { label = "[control] toggle: Toggle pi panel", kind = "control", action = "toggle" }
-
-  -- Format items for vim.ui.select
-  local labels = {}
-  for _, item in ipairs(items) do
-    labels[#labels + 1] = item.label
-  end
-
-  vim.ui.select(labels, {
+  vim.ui.select(items, {
     prompt = "Pi Action:",
-    format_item = function(item)
-      return item
-    end,
-  }, function(choice, idx)
-    if choice == nil or idx == nil then
-      ctx:resume()
+    format_item = function(item) return item.label end,
+  }, function(item)
+    if not item then
       return
     end
-
-    local selected = items[idx]
-
-    if selected.kind == "prompt" then
-      local resolved = context_mod.resolve(selected.text, ctx)
-      ctx:clear()
-      M._submit(resolved, { submit = selected.submit ~= false })
-    elseif selected.kind == "control" then
-      ctx:clear()
-      if selected.action == "abort" then
-        M.abort()
-      elseif selected.action == "toggle" then
-        M.toggle()
-      end
+    if item.action then
+      M[item.action]()
+    else
+      M._submit(item.text, { submit = item.submit ~= false, context = context })
     end
   end)
+  return true
 end
 
---- Abort pi's current operation.
 function M.abort()
-  require("pi.terminal").send_abort()
+  return frontend_result("abort", project_cwd())
 end
 
---- Send a compact file reference (path:lines) to pi's editor without submitting.
---- The reference is typed as raw keystrokes so the user can add instructions
---- and submit manually.
+function M.model()
+  return frontend_result("model", project_cwd())
+end
+
+function M.thinking()
+  return frontend_result("thinking", project_cwd())
+end
+
+function M.stop()
+  return frontend_result("stop", project_cwd())
+end
+
+--- Insert canonical CodeCompanion context into the composer.
+---@return boolean
 function M.send_context()
-  local context_mod = require("pi.context")
-  local terminal = require("pi.terminal")
-
-  local ctx = context_mod.Context.new()
-  local ref = ctx:ref()
-  ctx:clear()
-
-  if ref then
-    M._submit(ref, { submit = false })
+  local context = capture_context()
+  if not context then
+    return false
   end
+  local token = context.is_visual and "#{selection} " or "#{buffer} "
+  return M._submit(token, { submit = false, context = context })
 end
 
---- Capture a manual turn checkpoint for prompts typed directly in Pi.
+--- Capture a manual turn baseline.
 ---@return boolean
 function M.checkpoint()
-  local config = require("pi.config")
-  local project = require("pi.project")
-  local checkpoint = require("pi.checkpoint")
-  local cwd = project.resolve_cwd()
-  if config.opts.review.save_before_prompt then
-    local boundary, boundary_err = project_boundary(cwd)
-    if not boundary then
-      notify_error("cannot resolve project", boundary_err)
-      return false
-    end
-    local saved, save_err = project.save_modified(boundary)
-    if not saved then
-      vim.notify("Pi: " .. save_err, vim.log.levels.ERROR)
-      return false
-    end
+  local cwd = project_cwd()
+  local boundary, boundary_err = project_boundary(cwd)
+  if not boundary then
+    notify_error("cannot resolve project", boundary_err)
+    return false
   end
-  local tracked, track_err = checkpoint.start_turn(cwd)
-  if track_err then
-    notify_error("checkpoint failed", track_err)
+  local saved, save_err = require("pi.project").save_modified(boundary)
+  if not saved then
+    notify_error("save failed", save_err)
+    return false
+  end
+  local tracked, checkpoint_err = require("pi.checkpoint").start_turn(cwd)
+  if checkpoint_err then
+    notify_error("checkpoint failed", checkpoint_err)
     return false
   end
   if not tracked then
     vim.notify("Pi: review requires a Git worktree", vim.log.levels.WARN)
     return false
   end
-  vim.notify(string.format("Pi: checkpoint %d captured", checkpoint.state().turn_number))
+  local state = require("pi.checkpoint").state(cwd)
+  vim.notify(string.format("Pi: checkpoint %d captured", state.turn_number))
   return true
 end
 
---- Open a native diff review. Pending review is mutable; turn and session are audits.
 ---@param scope? "pending"|"turn"|"session"
 ---@return boolean
 function M.review(scope)
-  local cwd = require("pi.project").resolve_cwd()
+  if not require("pi.config").opts.review.enabled then
+    vim.notify("Pi: review is disabled", vim.log.levels.WARN)
+    return false
+  end
+  local cwd = project_cwd()
   local state, ensure_err = require("pi.checkpoint").ensure(cwd)
   if not state then
     notify_error("checkpoint failed", ensure_err)
@@ -312,30 +221,24 @@ function M.review(scope)
   return require("pi.review").open(scope)
 end
 
---- Accept a review hunk, file, or all pending changes.
 ---@param target "hunk"|"file"|"all"
----@return boolean
 function M.accept(target)
   return require("pi.review").accept(target)
 end
 
---- Reject a review hunk or file.
 ---@param target "hunk"|"file"
----@return boolean
 function M.reject(target)
   return require("pi.review").reject(target)
 end
 
---- Show review status for the configured project.
----@return table|nil
 function M.status()
-  local cwd = require("pi.project").resolve_cwd()
+  local cwd = project_cwd()
   local state, ensure_err = require("pi.checkpoint").ensure(cwd)
   if not state then
     notify_error("checkpoint failed", ensure_err)
     return nil
   end
-  local status, status_err = require("pi.checkpoint").status()
+  local status, status_err = require("pi.checkpoint").status(cwd)
   if not status then
     notify_error("status failed", status_err)
     return nil
@@ -354,81 +257,50 @@ function M.status()
   return status
 end
 
---- Create an operator function for dot-repeat support.
---- Usage: vim.keymap.set("n", "gp", function() return require("pi").operator("@this: ") end, { expr = true })
----@param prefix string Text to prepend to the prompt
+--- Build a dot-repeatable operator using CodeCompanion's selection context.
+---@param prefix string
 ---@param opts? { submit?: boolean }
----@return string "g@" to trigger operatorfunc
+---@return string
 function M.operator(prefix, opts)
   opts = opts or {}
-
-  ---@param kind "char"|"line"|"block"
   _G._pi_operatorfunc = function(kind)
     local start_pos = vim.api.nvim_buf_get_mark(0, "[")
     local end_pos = vim.api.nvim_buf_get_mark(0, "]")
     if start_pos[1] > end_pos[1] or (start_pos[1] == end_pos[1] and start_pos[2] > end_pos[2]) then
       start_pos, end_pos = end_pos, start_pos
     end
-
-    ---@type pi.Context.Range
-    local range = {
-      from = { start_pos[1], start_pos[2] },
-      to = { end_pos[1], end_pos[2] },
-      kind = kind,
-    }
-
-    local ctx = require("pi.context").Context.new(range)
-
-    if opts.submit then
-      M.ask(prefix, { submit = true, context = ctx })
-    else
-      M.ask(prefix, { context = ctx })
+    if kind == "line" then
+      start_pos[2] = 0
+      end_pos[2] = #vim.api.nvim_buf_get_lines(0, end_pos[1] - 1, end_pos[1], false)[1]
+    end
+    vim.fn.setpos("'<", { 0, start_pos[1], start_pos[2] + 1, 0 })
+    vim.fn.setpos("'>", { 0, end_pos[1], end_pos[2] + 1, 0 })
+    local context = capture_context({ context_opts = { range = 1 } })
+    if context then
+      M.ask(prefix, { submit = opts.submit, context = context })
     end
   end
-
   vim.o.operatorfunc = "v:lua._pi_operatorfunc"
   return "g@"
 end
 
---- Set up default keymaps from config.
 function M._setup_keymaps()
-  local config = require("pi.config")
-  local km = config.opts.keymaps
-
-  if km.toggle then
-    vim.keymap.set({ "n", "t" }, km.toggle, function()
-      M.toggle()
-    end, { silent = true, desc = "Pi: Toggle panel" })
+  local keymaps = require("pi.config").opts.keymaps
+  if keymaps.toggle then
+    vim.keymap.set("n", keymaps.toggle, M.toggle, { silent = true, desc = "Pi: Toggle chat" })
   end
-
-  if km.ask then
-    vim.keymap.set("n", km.ask, function()
-      M.ask("@this: ")
-    end, { silent = true, desc = "Pi: Ask about code" })
-    vim.keymap.set("v", km.ask, function()
-      M.ask("@this: ")
-    end, { silent = true, desc = "Pi: Ask about selection" })
+  if keymaps.ask then
+    vim.keymap.set("n", keymaps.ask, function() M.ask("@this: ") end, { silent = true, desc = "Pi: Ask about code" })
+    vim.keymap.set("v", keymaps.ask, function() M.ask("@this: ") end, { silent = true, desc = "Pi: Ask about selection" })
   end
-
-  if km.select then
-    vim.keymap.set({ "n", "v" }, km.select, function()
-      M.select()
-    end, { silent = true, desc = "Pi: Action picker" })
+  if keymaps.select then
+    vim.keymap.set({ "n", "v" }, keymaps.select, M.select, { silent = true, desc = "Pi: Action picker" })
   end
-
-  if km.prompt_this then
-    vim.keymap.set("n", km.prompt_this, function()
-      M.send_context()
-    end, { silent = true, desc = "Pi: Send code context" })
-    vim.keymap.set("v", km.prompt_this, function()
-      M.send_context()
-    end, { silent = true, desc = "Pi: Send selection" })
+  if keymaps.prompt_this then
+    vim.keymap.set({ "n", "v" }, keymaps.prompt_this, M.send_context, { silent = true, desc = "Pi: Add context" })
   end
-
-  if km.abort then
-    vim.keymap.set("n", km.abort, function()
-      M.abort()
-    end, { silent = true, desc = "Pi: Abort" })
+  if keymaps.abort then
+    vim.keymap.set("n", keymaps.abort, M.abort, { silent = true, desc = "Pi: Abort" })
   end
 end
 

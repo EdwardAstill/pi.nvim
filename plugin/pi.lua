@@ -6,11 +6,6 @@ if vim.g.loaded_pi then
 end
 vim.g.loaded_pi = 1
 
--- Highlight groups
-vim.api.nvim_set_hl(0, "PiContextPlaceholder", { default = true, link = "Special" })
-vim.api.nvim_set_hl(0, "PiContextValue", { default = true, link = "String" })
-vim.api.nvim_set_hl(0, "PiTerminalBorder", { default = true, link = "FloatBorder" })
-
 -- File reload autocmds: detect files edited by pi
 local reload_group = vim.api.nvim_create_augroup("PiFileReload", { clear = true })
 
@@ -30,7 +25,6 @@ vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter" }, {
   desc = "pi.nvim: reload buffers when files change externally",
 })
 
--- Terminal cleanup on VimLeavePre
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = vim.api.nvim_create_augroup("PiCleanup", { clear = true }),
   callback = function()
@@ -38,16 +32,12 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
     if review_ok then
       pcall(review.close)
     end
-    local ok, terminal = pcall(require, "pi.terminal")
-    if ok then
-      pcall(terminal.stop)
-    end
     local checkpoint_ok, checkpoint = pcall(require, "pi.checkpoint")
     if checkpoint_ok then
       pcall(checkpoint.cleanup)
     end
   end,
-  desc = "pi.nvim: clean up terminal and review state on exit",
+  desc = "pi.nvim: clean up review checkpoint state on exit",
 })
 
 -- User commands
@@ -58,6 +48,8 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
 
   if subcmd == "toggle" then
     pi.toggle()
+  elseif subcmd == "focus" then
+    pi.focus()
   elseif subcmd == "ask" then
     local text = table.concat(vim.list_slice(args, 2), " ")
     pi.ask(text ~= "" and text or nil)
@@ -72,6 +64,10 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
     pi.select()
   elseif subcmd == "abort" then
     pi.abort()
+  elseif subcmd == "model" then
+    pi.model()
+  elseif subcmd == "thinking" then
+    pi.thinking()
   elseif subcmd == "checkpoint" then
     pi.checkpoint()
   elseif subcmd == "review" then
@@ -97,6 +93,8 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
     end
   elseif subcmd == "status" then
     pi.status()
+  elseif subcmd == "stop" then
+    pi.stop()
   else
     -- Treat entire input as a prompt
     local text = table.concat(args, " ")
@@ -106,7 +104,22 @@ end, {
   nargs = "*",
   desc = "Pi coding agent",
   complete = function(arg_lead, line)
-    local subcmds = { "toggle", "ask", "prompt", "select", "abort", "checkpoint", "review", "accept", "reject", "status" }
+    local subcmds = {
+      "toggle",
+      "focus",
+      "ask",
+      "prompt",
+      "select",
+      "abort",
+      "model",
+      "thinking",
+      "checkpoint",
+      "review",
+      "accept",
+      "reject",
+      "status",
+      "stop",
+    }
     local parts = vim.split(vim.trim(line), "%s+")
     if #parts <= 1 or (#parts == 2 and not line:match("%s$")) then
       local prefix = arg_lead or ""

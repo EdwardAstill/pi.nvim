@@ -6,7 +6,7 @@
 
 **Architecture:** Pi chats run through CodeCompanion ACP and pi-acp. pi.nvim supplies a Pi adapter, synchronous checkpoint callbacks, project association, and a MiniDiff source backed by `accepted_tree`.
 
-**Tech Stack:** Lua, Neovim 0.10+, CodeCompanion.nvim, codecompanion-ui.nvim, pi-acp, mini.diff, Git.
+**Tech Stack:** Lua, Neovim 0.11+, CodeCompanion.nvim, codecompanion-ui.nvim, pi-acp, mini.diff, Git.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-pi-codecompanion-minidiff-design.md`
 
@@ -28,11 +28,11 @@
 
 **Interfaces:** Preserve existing calls; add optional cwd to `state`, `view`, acceptance, rejection, status, and cleanup operations.
 
-- [ ] Add failing regressions for two independent roots, repeated turns, new/deleted files, all acceptance directions, and byte-identical real-index state.
-- [ ] Run `make test` and confirm the new cases fail.
-- [ ] Replace singleton checkpoint state with normalized root-keyed state while retaining active-root compatibility.
-- [ ] Add MIT and third-party notices, then run `make test`.
-- [ ] Commit as `test: protect project checkpoint semantics`.
+- [x] Add failing regressions for two independent roots, repeated turns, new/deleted files, all acceptance directions, and byte-identical real-index state.
+- [x] Run `make test` and confirm the new cases fail.
+- [x] Replace singleton checkpoint state with normalized root-keyed state while retaining active-root compatibility.
+- [x] Add MIT and third-party notices, then run `make test`.
+- [x] Commit as `test: protect project checkpoint semantics`.
 
 ### Task 2: Add the Pi ACP bridge and lifecycle
 
@@ -40,23 +40,28 @@
 
 **Interfaces:** Produce `codecompanion.adapter()`, project-chat create/restore/prompt/abort/model/thinking operations, plus `lifecycle.setup()` and idempotent `lifecycle.attach(chat, cwd)`.
 
-- [ ] Add failing tests for the ACP adapter, Pi-only callback filtering, chat reuse, save-before-checkpoint ordering, cancellation, cwd restoration, completion reload, and draft recovery.
-- [ ] Run `make test` and confirm failures.
-- [ ] Implement the minimal adapter/facade and synchronous `on_before_submit` lifecycle, delegating all ACP and agent behavior to CodeCompanion.
-- [ ] Run `make test && make smoke`.
-- [ ] Commit as `feat: bridge Pi through CodeCompanion ACP` and stop for milestone 1 review.
+- [x] Add failing tests for the ACP adapter, Pi-only callback filtering, chat reuse, save-before-checkpoint ordering, cancellation, cwd restoration, completion reload, and draft recovery.
+- [x] Run `make test` and confirm failures.
+- [x] Implement the minimal adapter/facade and synchronous `on_before_submit` lifecycle, delegating all ACP and agent behavior to CodeCompanion.
+- [x] Run `make test && make smoke`.
+- [x] Commit as `feat: bridge Pi through CodeCompanion ACP` and stop for milestone 1 review.
 
-### Task 3: Route the public frontend through CodeCompanion UI
+### Task 3: Replace the public frontend with CodeCompanion UI
 
-**Files:** Modify `lua/pi/init.lua`, `lua/pi/config.lua`, `plugin/pi.lua`, `tests/init_spec.lua`, `tests/config_spec.lua`, `tests/commands_spec.lua`; create `tests/codecompanion_ui_spec.lua`.
+**Files:** Modify `lua/pi/init.lua`, `lua/pi/config.lua`, `lua/pi/health.lua`,
+`plugin/pi.lua`, and frontend tests; create `tests/codecompanion_ui_spec.lua`;
+delete `lua/pi/terminal.lua`, `lua/pi/context.lua`, and terminal tests.
 
 **Interfaces:** Preserve `toggle`, `ask`, `prompt`, `select`, `abort`, and keymaps; add `focus`, `model`, `thinking`, and `stop`.
 
-- [ ] Add failing tests for toggle/focus reuse, source-context capture, legacy-token translation, direct prompts, delegated controls, fallback opt-in, and command completion.
-- [ ] Run `make test` and confirm failures.
-- [ ] Rewire the facade to CodeCompanion/codecompanion-ui and add one-release terminal/context compatibility options and warnings.
-- [ ] Run `make test && make smoke`.
-- [ ] Commit as `refactor: use CodeCompanion native chat UI` and stop for milestone 2 review.
+- [x] Add failing tests for toggle/focus reuse, source-context capture,
+  legacy-token translation, direct prompts, delegated controls, and command
+  completion.
+- [x] Run `make test` and confirm failures.
+- [x] Rewire the facade to CodeCompanion/codecompanion-ui, retain only textual
+  legacy context-token translation, and remove the terminal/context frontend.
+- [x] Run `make test && make smoke`.
+- [x] Commit as `refactor: use CodeCompanion native chat UI` and stop for milestone 2 review.
 
 ### Task 4: Implement the accepted-tree MiniDiff source
 
@@ -78,18 +83,19 @@
 
 - [ ] Add failing tests for real-buffer opening, picker cancellation, buffer-local mappings, hunk/file/all actions, read-only scopes, reject confirmation, and unsupported files.
 - [ ] Run `make test` and confirm failures.
-- [ ] Replace tab diffs with the MiniDiff integration and file-level fallbacks.
+- [ ] Replace tab diffs with the MiniDiff integration and file-level handling for unsupported paths.
 - [ ] Run `make test`.
 - [ ] Commit as `refactor: review Pi changes with mini.diff`.
 
 ### Task 6: Verify the stack and remove legacy code
 
-**Files:** Delete `lua/pi/terminal.lua`, `lua/pi/context.lua`, `tests/terminal_spec.lua`; modify `lua/pi/health.lua`, `lua/pi/config.lua`, `lua/pi/init.lua`, `plugin/pi.lua`, `README.md`, `doc/pi.txt`, `Makefile`, `tests/run.lua`, `tests/smoke.lua`; create `tests/integration_spec.lua` and a guarded real-stack integration target.
+**Files:** Modify `README.md`, `doc/pi.txt`, `Makefile`, and integration tests;
+create `tests/integration_spec.lua` and a guarded real-stack integration target.
 
-**Interfaces:** Finalize the command/configuration surface in the design spec; terminal fallback and legacy context parsing no longer exist.
+**Interfaces:** Finalize the command/configuration surface in the design spec;
+legacy context-token translation is removed after its compatibility release.
 
 - [ ] Add controlled dependency integration tests and guarded pi-acp/Pi checks covering cwd, prompt, abort, model configuration, and process reuse.
-- [ ] Run the integration checks before deleting legacy modules.
-- [ ] Remove terminal/context code, finish health checks and migration documentation, and update smoke coverage.
+- [ ] Finish migration documentation and update smoke coverage.
 - [ ] Run `make test && make smoke` from a clean worktree and verify the real Git index is unchanged.
 - [ ] Commit as `refactor: complete CodeCompanion and MiniDiff migration` and stop for milestone 3 review.

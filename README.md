@@ -1,149 +1,149 @@
 # pi.nvim
 
-Neovim plugin that runs the real [Pi](https://pi.dev) TUI in a side panel, passes editor context to it, and reviews its file changes with native Neovim diffs.
+Pi-specific integration for [CodeCompanion.nvim](https://github.com/olimorris/codecompanion.nvim). CodeCompanion owns chat, streaming, tools, sessions, models, and editor context; [codecompanion-ui.nvim](https://github.com/mrjones2014/codecompanion-ui.nvim) provides the native composer; [pi-acp](https://github.com/svkozak/pi-acp) bridges ACP to Pi RPC. pi.nvim adds project-scoped checkpoints and change acceptance.
+
+There is no embedded-terminal frontend or fallback.
 
 ## Requirements
 
-- Neovim ≥ 0.10
-- [pi](https://pi.dev) CLI installed and in PATH
-- [snacks.nvim](https://github.com/folke/snacks.nvim) (optional, recommended — provides terminal management and input UI)
+- Neovim 0.11+
+- Node.js 22+
+- Pi 0.80.4+
+- `git`
+- [`pi`](https://github.com/earendil-works/pi) and [`pi-acp`](https://github.com/svkozak/pi-acp) in `PATH`
+- [`olimorris/codecompanion.nvim`](https://github.com/olimorris/codecompanion.nvim)
+- [`mrjones2014/codecompanion-ui.nvim`](https://github.com/mrjones2014/codecompanion-ui.nvim)
+- [`nvim-mini/mini.diff`](https://github.com/nvim-mini/mini.diff)
+
+Install the external processes with:
+
+```sh
+npm install -g @earendil-works/pi-coding-agent pi-acp
+```
 
 ## Installation
 
-### lazy.nvim
+Example for lazy.nvim:
 
 ```lua
 {
-  dir = vim.fn.expand("~/Projects/pi.nvim"),
+  "olimorris/codecompanion.nvim",
   dependencies = {
-    { "folke/snacks.nvim", optional = true },
+    "nvim-lua/plenary.nvim",
+    "mrjones2014/codecompanion-ui.nvim",
   },
-  config = function()
-    require("pi").setup({
-      -- your overrides here (see Configuration)
-    })
-  end,
+  opts = {
+    adapters = {
+      acp = {
+        pi = function()
+          return require("pi.codecompanion").adapter()
+        end,
+      },
+    },
+    extensions = {
+      ui = {
+        enabled = true,
+        opts = {
+          input = { height = 5 },
+          chat = { width = 0.4 },
+        },
+      },
+    },
+  },
+},
+{
+  "EdwardAstill/pi.nvim",
+  dependencies = {
+    "olimorris/codecompanion.nvim",
+    "mrjones2014/codecompanion-ui.nvim",
+    "nvim-mini/mini.diff",
+  },
+  opts = {},
 }
 ```
 
-## Default Keymaps
-
-| Key | Mode | Action |
-|-----|------|--------|
-| `<leader>pt` | n, t | Toggle pi panel |
-| `<leader>pa` | n, v | Ask pi about code / selection (opens input prompt) |
-| `<leader>px` | n, v | Action picker (prompts + controls) |
-| `<leader>pp` | n, v | Send code context directly to pi |
-| `<leader>pq` | n | Abort pi's current operation |
-
-All keymaps can be changed or disabled individually:
-
-```lua
-require("pi").setup({
-  keymaps = {
-    toggle = "<C-.>",       -- change the binding
-    abort = false,          -- disable this keymap
-  },
-})
-```
+`render-markdown.nvim` may be configured for CodeCompanion, but pi.nvim does not require it.
 
 ## Usage
 
-1. **Toggle panel**: `<leader>pt` opens pi in a side panel. Pi runs its full interactive TUI — you can interact with it directly there.
+`<leader>pt` opens or hides the project chat. Hiding it preserves the chat, composer draft, and ACP process. The composer is a normal editable codecompanion-ui buffer, so ordinary Vim motions, operators, registers, undo, paste, and user mappings work normally.
 
-2. **Ask about code**: Select code in visual mode, press `<leader>pa`, type your question (e.g. "explain this"), press Enter. The selected code is automatically included as context.
+`<leader>pa` captures CodeCompanion editor context before changing windows and opens the composer. Visual selections are retained even if you switch windows before submitting. pi.nvim also translates its old prompt tokens to CodeCompanion context during one compatibility release:
 
-3. **Action picker**: Press `<leader>px` to choose from pre-configured prompts: explain, review, fix, test, document, optimize, implement, diff.
+| Old token | CodeCompanion context |
+|---|---|
+| `@this` | `#{selection}` for a visual selection, otherwise `#{buffer}` |
+| `@buffer` | `#{buffer}` |
+| `@buffers` | `#{buffers}` |
+| `@visible` | `#{viewport}` |
+| `@diagnostics` | `#{diagnostics}` |
+| `@quickfix` | `#{quickfix}` |
+| `@diff` | `#{diff}` |
 
-4. **Direct send**: `<leader>pp` sends code context to pi immediately without an input dialog.
+CodeCompanion's `#{...}` syntax is canonical. Set `compatibility.legacy_context_tokens = false` to disable translation.
 
-5. **Commands**: Use `:Pi` commands to control the panel, send prompts, and review changes. All supported forms are listed below.
+## Checkpoints and review
 
-### Commands
+Immediately before CodeCompanion submits a Pi prompt, pi.nvim synchronously:
+
+1. saves modified project buffers;
+2. captures `turn_base_tree`;
+3. allows submission only if both operations succeed.
+
+If saving or checkpointing fails, submission is cancelled and the composer draft is restored. The first project snapshot initializes `session_start_tree` and mutable `accepted_tree`, including pre-existing worktree changes.
+
+| Scope | Baseline | Mutable? |
+|---|---|---|
+| pending | `accepted_tree` | yes |
+| turn | `turn_base_tree` | audit only |
+| session | `session_start_tree` | audit only |
+
+Accepting a hunk, file, or all files advances only the private accepted tree. Rejecting restores accepted content into the working tree. pi.nvim uses a temporary Git index: it never stages files, writes the real index, or creates commits or branches.
+
+## Commands
 
 | Command | Action |
-|---------|--------|
-| `:Pi` | Toggle the terminal panel |
-| `:Pi toggle` | Toggle the terminal panel |
-| `:Pi ask` | Open an empty input prompt |
-| `:Pi ask <text>` | Open an input prompt pre-filled with text |
-| `:Pi prompt <name>` | Run a configured named prompt, such as `explain` or `review` |
-| `:Pi prompt <text>` | Send arbitrary text as a prompt |
-| `:Pi <text>` | Send arbitrary text as a prompt when its first word is not a subcommand |
-| `:Pi select` | Open the action picker |
-| `:Pi abort` | Abort Pi's current operation |
-| `:Pi checkpoint` | Capture a checkpoint before typing a prompt directly in Pi |
-| `:Pi review` | Review unaccepted changes |
-| `:Pi review turn` | Audit changes since the latest turn checkpoint |
-| `:Pi review session` | Audit changes since the Pi project session began |
-| `:Pi accept hunk` | Accept the current hunk |
-| `:Pi accept file` | Accept the current file |
-| `:Pi accept all` | Accept all pending files |
-| `:Pi reject hunk` | Reject the current hunk |
-| `:Pi reject file` | Reject the current file |
-| `:Pi status` | Show the turn and pending file/hunk counts |
+|---|---|
+| `:Pi`, `:Pi toggle` | Show or hide the project chat |
+| `:Pi focus` | Focus the composer |
+| `:Pi ask [text]` | Open the composer, optionally with draft text |
+| `:Pi prompt <text-or-name>` | Submit text or a configured prompt |
+| `:Pi select` | Select a configured prompt or control action |
+| `:Pi abort` | Abort the active Pi request |
+| `:Pi model` | Open CodeCompanion's model selector |
+| `:Pi thinking` | Open CodeCompanion's ACP thinking selector |
+| `:Pi checkpoint` | Capture a manual turn baseline |
+| `:Pi review [turn\|session]` | Review pending changes or an audit scope |
+| `:Pi accept hunk\|file\|all` | Advance the accepted baseline |
+| `:Pi reject hunk\|file` | Restore accepted content |
+| `:Pi status` | Show checkpoint/review status |
+| `:Pi stop` | Close the project chat and ACP process |
 
-### Change review
-
-pi.nvim builds each diff from Git tree snapshots of the files on disk. When review state is first initialized for a project, it snapshots the entire working tree as both the session starting point and the initial accepted baseline. This includes pre-existing tracked changes and non-ignored untracked files, so they are not mistaken for changes made by Pi.
-
-| Review command | Base (left side) | Current (right side) | Can accept/reject? |
-|----------------|------------------|----------------------|--------------------|
-| `:Pi review` | The accepted baseline | A fresh snapshot of the working tree | Yes |
-| `:Pi review turn` | The snapshot taken immediately before the latest submitted prompt or manual checkpoint | A fresh snapshot of the working tree | No; audit only |
-| `:Pi review session` | The snapshot taken when review state was initialized for the project | A fresh snapshot of the working tree | No; audit only |
-
-Prompts submitted through the plugin save modified project buffers and capture the turn snapshot before the prompt is sent to Pi. Before typing a prompt directly into Pi's TUI, run `:Pi checkpoint` so the turn diff has the correct starting point.
-
-- `:Pi review` reviews changes that have not been accepted yet.
-- `:Pi review turn` and `:Pi review session` open read-only audit diffs.
-- In a pending review, use `a`/`r` for the current hunk, `A`/`R` for the current file, and `q` to close.
-- `:Pi accept all` accepts every pending file. `:Pi status` shows the turn and pending file/hunk counts.
-
-Accepting a hunk or file copies its current content into pi.nvim's private accepted baseline, so it disappears from future pending reviews without changing the working tree. Rejecting copies content from that baseline back into the working tree. Snapshots use a temporary Git index and create no commits; pi.nvim never reads from or writes to your real Git index.
-
-### Context Placeholders
-
-Prompts can include `@placeholders` that are resolved from your editor state:
-
-| Placeholder | Content |
-|-------------|---------|
-| `@this` | Visual selection, or code around cursor (±5 lines) |
-| `@buffer` | Full buffer content (truncated at 500 lines) |
-| `@buffers` | List of all loaded file buffers with previews |
-| `@visible` | Content visible in all windows |
-| `@diagnostics` | LSP diagnostics for current buffer |
-| `@quickfix` | Quickfix list entries |
-| `@diff` | Git diff output |
-
-Example: `<leader>pa` → type `fix the error in @this based on @diagnostics` → code + diagnostics are inlined into the prompt sent to pi.
+Pending review mappings default to `[h`, `]h`, `a`, `r`, `A`, `R`, and `q`. They are buffer-local. Turn and session scopes do not install mutating mappings.
 
 ## Configuration
 
-All defaults:
-
 ```lua
 require("pi").setup({
-  terminal = {
-    position = "right",       -- "left", "right", or "bottom"
-    size = 0.4,               -- fraction of screen (0.0-1.0)
-    cmd = "pi",               -- pi executable
-    continue_session = true,  -- pass -c flag (continue previous session)
-    auto_start = false,       -- open panel on setup
-    send_delay = 50,          -- delay in ms between clearing and pasting
-    startup_timeout = 5000,  -- startup timeout and initial Ctrl-C grace period in ms
-    max_retries = 10,         -- terminal startup poll attempts
-    clear_before_send = true, -- clear before later sends (the first send is never cleared)
+  codecompanion = {
+    adapter = "pi",
+    command = { "pi-acp" },
+    -- Or without a global installation:
+    -- command = { "npx", "-y", "pi-acp" },
   },
-
+  compatibility = {
+    legacy_context_tokens = true,
+  },
   project = {
-    cwd = nil,                  -- fixed path, or Neovim's cwd when nil
+    cwd = nil,
   },
-
   review = {
     enabled = true,
-    save_before_prompt = true,
+    save_before_prompt = true, -- required invariant; false is rejected
+    overlay = true,
     keymaps = {
+      previous_hunk = "[h",
+      next_hunk = "]h",
       accept_hunk = "a",
       reject_hunk = "r",
       accept_file = "A",
@@ -151,35 +151,6 @@ require("pi").setup({
       close = "q",
     },
   },
-
-  prompts = {
-    explain  = { text = "Explain @this and its context", submit = true },
-    review   = { text = "Review @this for correctness and readability", submit = true },
-    fix      = { text = "Fix @diagnostics", submit = true },
-    test     = { text = "Add tests for @this", submit = true },
-    document = { text = "Add documentation comments to @this", submit = true },
-    optimize = { text = "Optimize @this for performance and readability", submit = true },
-    implement = { text = "Implement @this", submit = true },
-    diff     = { text = "Review the following git diff for correctness and readability: @diff", submit = true },
-    -- Set any to false to remove: fix = false
-  },
-
-  contexts = {
-    ["@this"] = true,
-    ["@buffer"] = true,
-    ["@buffers"] = true,
-    ["@visible"] = true,
-    ["@diagnostics"] = true,
-    ["@quickfix"] = true,
-    ["@diff"] = true,
-    -- Set any to false to disable
-  },
-
-  ask = {
-    prompt = "pi> ",
-    snacks = {},  -- snacks.input window options
-  },
-
   keymaps = {
     toggle = "<leader>pt",
     ask = "<leader>pa",
@@ -187,26 +158,14 @@ require("pi").setup({
     prompt_this = "<leader>pp",
     abort = "<leader>pq",
   },
-
   events = {
-    reload = true,  -- auto-reload buffers on FocusGained/BufEnter
+    reload = true,
   },
 })
 ```
 
-## Coexistence with opencode.nvim
-
-pi.nvim uses `<leader>p` prefix keymaps by default, which don't conflict with opencode.nvim's bindings. Both can run simultaneously — they manage separate terminal instances with different filetypes (`pi_terminal` vs opencode's terminal).
-
-## Architecture
-
-Pi runs in an embedded Neovim terminal buffer rooted at the configured project directory. When you trigger a prompt:
-1. Your selection/context is captured from the editor
-2. `@placeholders` in the prompt are resolved to actual code content
-3. Modified project buffers are saved and a private Git-tree checkpoint is captured
-4. The resolved text is injected into pi's TUI editor via [bracketed paste](https://en.wikipedia.org/wiki/Bracketed-paste)
-5. Pi processes the prompt and you can review its edits against the checkpoint
+Passing the removed `terminal` configuration is an error. Run `:checkhealth pi` to verify the full dependency stack.
 
 ## License
 
-MIT
+MIT. See [THIRD_PARTY.md](THIRD_PARTY.md) for integrated projects and their licenses.

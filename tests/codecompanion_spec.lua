@@ -192,7 +192,7 @@ H.test("direct project prompt enters the reusable chat and submits", function()
   }, function()
     local bridge = require("pi.codecompanion")
     local root = H.tmpdir()
-    local chat = assert(bridge.prompt("inspect this", { cwd = root, hidden = true }))
+    local chat = assert(bridge.prompt("inspect this", { cwd = root, hidden = true, context = {} }))
 
     H.eq({ "inspect this" }, vim.api.nvim_buf_get_lines(chat.bufnr, 0, -1, false))
     H.eq(1, chat.submitted)

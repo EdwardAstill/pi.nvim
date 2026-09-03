@@ -51,7 +51,7 @@ local function lifecycle_stubs(overrides)
     ["pi.config"] = {
       opts = {
         events = { reload = false },
-        review = { save_before_prompt = true },
+        review = { enabled = true, save_before_prompt = true },
       },
     },
     ["pi.project"] = {
@@ -127,6 +127,43 @@ H.test("pre-submit saves project buffers before capturing the turn", function()
     H.eq(true, chat:submit())
     H.eq({ "save:" .. root, "checkpoint:" .. root, "send:" .. root }, order)
   end)
+end)
+
+H.test("disabled review still saves and checkpoints before submission", function()
+  local save_calls = 0
+  local checkpoint_calls = 0
+  with_modules(lifecycle_stubs({
+    ["pi.config"] = {
+      opts = {
+        events = { reload = false },
+        review = { enabled = false, save_before_prompt = false },
+      },
+    },
+    ["pi.project"] = {
+      save_modified = function()
+        save_calls = save_calls + 1
+        return true
+      end,
+      is_within = function() return false end,
+      resolve_cwd = function() return vim.fn.getcwd() end,
+    },
+    ["pi.checkpoint"] = {
+      start_turn = function()
+        checkpoint_calls = checkpoint_calls + 1
+        return true
+      end,
+      cleanup = function() end,
+    },
+  }), function()
+    local lifecycle = require("pi.lifecycle")
+    local chat = fake_chat()
+    lifecycle.attach(chat, H.tmpdir())
+
+    H.eq(true, chat:submit())
+  end)
+
+  H.eq(1, save_calls)
+  H.eq(1, checkpoint_calls)
 end)
 
 H.test("save failure cancels submission before checkpointing", function()
@@ -601,6 +638,77 @@ H.test("restored CodeCompanion submission returns the draft to codecompanion-ui"
     })
 
     H.eq({ "keep this draft" }, vim.api.nvim_buf_get_lines(input_buf, 0, -1, false))
+    H.eq({ "history" }, vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false))
+  end)
+end)
+
+H.test("draft recovery hook installs when codecompanion-ui loads after setup", function()
+  local chat = fake_chat()
+  local input = {
+    submit = function() end,
+  }
+  with_modules(lifecycle_stubs({
+    ["codecompanion-ui.input"] = false,
+    codecompanion = {
+      buf_get_chat = function(bufnr)
+        return bufnr == chat.bufnr and chat or nil
+      end,
+    },
+    ["pi.codecompanion"] = {
+      register = function() end,
+    },
+  }), function()
+    local lifecycle = require("pi.lifecycle")
+    lifecycle.setup()
+    package.loaded["codecompanion-ui.input"] = input
+
+    vim.api.nvim_exec_autocmds("User", {
+      pattern = "CodeCompanionChatCreated",
+      data = { bufnr = chat.bufnr },
+    })
+
+    H.truthy(input._pi_original_submit)
+  end)
+end)
+
+H.test("cancelled submission restores composer whitespace exactly", function()
+  local input_buf = vim.api.nvim_create_buf(false, true)
+  local chat_buf = vim.api.nvim_create_buf(false, true)
+  local original = { "  indented", "", "trailing  ", "" }
+  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, original)
+  vim.api.nvim_buf_set_lines(chat_buf, 0, -1, false, { "history" })
+  local session = { input_bufnr = input_buf, chat_bufnr = chat_buf }
+  local input = {
+    refresh_placeholder = function() end,
+    submit = function(current)
+      local lines = vim.api.nvim_buf_get_lines(current.input_bufnr, 0, -1, false)
+      local text = vim.trim(table.concat(lines, "\n"))
+      vim.api.nvim_buf_set_lines(current.input_bufnr, 0, -1, false, { "" })
+      vim.api.nvim_buf_set_lines(current.chat_bufnr, -1, -1, false, vim.split(text, "\n", { plain = true }))
+    end,
+  }
+  with_modules(lifecycle_stubs({
+    ["codecompanion-ui.input"] = input,
+    ["codecompanion-ui.state"] = {
+      get_by_bufnr = function(bufnr)
+        return bufnr == chat_buf and session or nil
+      end,
+    },
+    codecompanion = {
+      buf_get_chat = function()
+        return { adapter = { name = "pi" }, bufnr = chat_buf }
+      end,
+    },
+  }), function()
+    local lifecycle = require("pi.lifecycle")
+    lifecycle.setup()
+    input.submit(session)
+    vim.api.nvim_exec_autocmds("User", {
+      pattern = "CodeCompanionChatRestored",
+      data = { bufnr = chat_buf },
+    })
+
+    H.eq(original, vim.api.nvim_buf_get_lines(input_buf, 0, -1, false))
     H.eq({ "history" }, vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false))
   end)
 end)

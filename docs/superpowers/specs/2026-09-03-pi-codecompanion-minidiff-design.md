@@ -46,9 +46,9 @@ checkpoint semantics that distinguish pending, turn, and session changes.
 - File and all-file acceptance preserve the working tree. Rejection preserves
   `accepted_tree`.
 - The user's real Git index is never read or written by checkpoint operations.
-- The terminal frontend remains an explicit migration fallback until the new
-  stack passes integration tests, then is deleted.
-- Neovim 0.10 remains the minimum supported version.
+- No terminal fallback remains; chat and input always use CodeCompanion and
+  codecompanion-ui.
+- Neovim 0.11 is the minimum supported version, matching current CodeCompanion.
 
 ## Non-goals
 
@@ -393,19 +393,15 @@ New Pi configuration contains integration and review options only:
     },
   },
   compatibility = {
-    terminal_fallback = false,
     legacy_context_tokens = true,
   },
 }
 ```
 
-During the first two milestones, recognized terminal fields translate into the
-fallback configuration and emit one deprecation warning per Neovim session.
-Unknown terminal timing and paste fields are ignored with one warning. After
-the real-stack integration test passes in milestone three, terminal fallback,
-terminal configuration, `terminal.lua`, `terminal_spec.lua`, `pi.context`, and
-its duplicate configuration are removed. The migration is then documented as
-a breaking release.
+Terminal configuration is rejected with a direct migration error. The terminal
+frontend, `pi.context`, and their tests are removed with the native frontend;
+legacy context tokens remain only as textual translations to CodeCompanion
+context tokens for one compatibility release.
 
 ## Error handling
 
@@ -459,7 +455,7 @@ a running Pi process.
 - completion reload and status refresh;
 - composer draft recovery after cancellation;
 - legacy context-token translation;
-- terminal fallback only when explicitly enabled.
+- absence of terminal routing or configuration.
 
 ### MiniDiff tests
 
@@ -485,8 +481,7 @@ a running Pi process.
 - A real-stack target, guarded by executable checks, starts `pi-acp` and Pi in a
   temporary Git project and proves prompt, abort, model/session configuration,
   cwd, and process reuse.
-- The terminal and old reviewer are removed only after both integration layers
-  pass.
+- The old reviewer is removed after the MiniDiff integration passes.
 
 ## Milestones
 
@@ -497,7 +492,6 @@ a running Pi process.
 - Add dependency health checks and the Pi ACP adapter.
 - Add lifecycle callbacks and headless CodeCompanion integration tests.
 - Make `:Pi prompt`, `:Pi abort`, and delegated model controls work.
-- Retain the terminal as an explicit fallback.
 - Run `make test` and `make smoke`, then stop for review.
 
 ### 2. CodeCompanion UI lifecycle
@@ -506,8 +500,9 @@ a running Pi process.
   CodeCompanion/codecompanion-ui.
 - Preserve drafts across hide/show and failed pre-submit.
 - Add compatibility translation for legacy context tokens.
+- Verify the terminal frontend and duplicate context implementation are absent.
 - Verify streaming, completion reload, cwd, process reuse, and no focus theft.
-- Leave the terminal present only as removable fallback code.
+- Keep CodeCompanion/codecompanion-ui as the only frontend.
 - Run `make test` and `make smoke`, then stop for review.
 
 ### 3. MiniDiff review and legacy removal
@@ -515,7 +510,7 @@ a running Pi process.
 - Replace the two-pane reviewer with the Pi MiniDiff source.
 - Complete hunk/file/all and audit-scope tests.
 - Run controlled and real-stack integration tests.
-- Remove terminal fallback and duplicate context implementation.
+- Remove the one-release legacy context-token translation.
 - Update commands, health, README, help, license, and notices.
 - Run `make test` and `make smoke`, then stop for final review.
 

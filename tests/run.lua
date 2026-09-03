@@ -3,10 +3,10 @@ local helpers = require("tests.helpers")
 for _, spec in ipairs({
   "config_spec",
   "project_spec",
-  "terminal_spec",
   "git_spec",
   "checkpoint_spec",
   "codecompanion_spec",
+  "codecompanion_ui_spec",
   "lifecycle_spec",
   "init_spec",
   "review_spec",

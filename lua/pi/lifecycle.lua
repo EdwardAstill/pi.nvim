@@ -138,18 +138,15 @@ local function before_submit(cwd)
     if not is_pi_chat(chat) then
       return
     end
-    local config = require("pi.config").opts
-    if config.review.save_before_prompt then
-      local save_result = pack(pcall(require("pi.project").save_modified, cwd))
-      if not save_result[1] then
-        notify_error(error_message(save_result[2]))
-        return false
-      end
-      local saved, save_err = save_result[2], save_result[3]
-      if not saved then
-        notify_error(save_err)
-        return false
-      end
+    local save_result = pack(pcall(require("pi.project").save_modified, cwd))
+    if not save_result[1] then
+      notify_error(error_message(save_result[2]))
+      return false
+    end
+    local saved, save_err = save_result[2], save_result[3]
+    if not saved then
+      notify_error(save_err)
+      return false
     end
 
     local checkpoint_result = pack(pcall(require("pi.checkpoint").start_turn, cwd))
@@ -264,7 +261,8 @@ local function install_input_compatibility()
       local lines = vim.api.nvim_buf_get_lines(session.input_bufnr, 0, -1, false)
       local text = vim.trim(table.concat(lines, "\n"))
       if text ~= "" then
-        session._pi_submitted_draft = vim.split(text, "\n", { plain = true })
+        session._pi_submitted_draft = vim.deepcopy(lines)
+        session._pi_submitted_lines = vim.split(text, "\n", { plain = true })
       end
     end
     return input._pi_original_submit(session, ...)
@@ -291,10 +289,11 @@ local function recover_draft(bufnr)
   end
 
   if session.chat_bufnr and vim.api.nvim_buf_is_valid(session.chat_bufnr) then
+    local submitted = session._pi_submitted_lines or draft
     local chat_lines = vim.api.nvim_buf_get_lines(session.chat_bufnr, 0, -1, false)
-    local start = #chat_lines - #draft + 1
+    local start = #chat_lines - #submitted + 1
     local matches = start > 0
-    for index, line in ipairs(draft) do
+    for index, line in ipairs(submitted) do
       matches = matches and chat_lines[start + index - 1] == line
     end
     if matches then
@@ -304,6 +303,7 @@ local function recover_draft(bufnr)
 
   vim.api.nvim_buf_set_lines(session.input_bufnr, 0, -1, false, draft)
   session._pi_submitted_draft = nil
+  session._pi_submitted_lines = nil
   local ok, input = pcall(require, "codecompanion-ui.input")
   if ok and type(input.refresh_placeholder) == "function" then
     input.refresh_placeholder(session.input_bufnr)
@@ -325,6 +325,7 @@ function M.setup()
       local ok, codecompanion = pcall(require, "codecompanion")
       local chat = ok and codecompanion.buf_get_chat(data.bufnr) or nil
       if is_pi_chat(chat) then
+        install_input_compatibility()
         local cwd = chat._pi_cwd or require("pi.project").resolve_cwd()
         M.attach(chat, cwd)
         local bridge_ok, bridge = pcall(require, "pi.codecompanion")
@@ -356,6 +357,7 @@ function M.setup()
       local chat = loaded and data.bufnr and codecompanion.buf_get_chat(data.bufnr) or nil
       if session and is_pi_chat(chat) then
         session._pi_submitted_draft = nil
+        session._pi_submitted_lines = nil
       end
     end,
   })
