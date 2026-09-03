@@ -10,6 +10,8 @@ for _, spec in ipairs({
   "lifecycle_spec",
   "init_spec",
   "review_spec",
+  "review_patch_spec",
+  "review_minidiff_spec",
   "commands_spec",
 }) do
   require("tests." .. spec)
