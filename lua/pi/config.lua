@@ -30,9 +30,9 @@
 ---@field continue_session boolean Pass -c flag to continue previous session
 ---@field auto_start boolean Open terminal panel on setup
 ---@field send_delay number Delay in ms between clear and paste (default 50)
----@field startup_timeout number Total timeout in ms waiting for terminal to start (default 5000)
+---@field startup_timeout number Terminal startup timeout and initial Ctrl-C grace period in ms (default 5000)
 ---@field max_retries number Max poll attempts when waiting for terminal startup (default 10)
----@field clear_before_send boolean Send Ctrl-C before pasting to clear pi's editor (default true)
+---@field clear_before_send boolean Send Ctrl-C before later pastes to clear pi's editor (default true)
 
 ---@class pi.Config.Prompt
 ---@field text string Prompt text (may contain @placeholders)

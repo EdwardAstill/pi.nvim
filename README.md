@@ -57,18 +57,50 @@ require("pi").setup({
 
 4. **Direct send**: `<leader>pp` sends code context to pi immediately without an input dialog.
 
-5. **Commands**: `:Pi toggle`, `:Pi ask <text>`, `:Pi prompt explain`, `:Pi select`, `:Pi abort`
+5. **Commands**: Use `:Pi` commands to control the panel, send prompts, and review changes. All supported forms are listed below.
+
+### Commands
+
+| Command | Action |
+|---------|--------|
+| `:Pi` | Toggle the terminal panel |
+| `:Pi toggle` | Toggle the terminal panel |
+| `:Pi ask` | Open an empty input prompt |
+| `:Pi ask <text>` | Open an input prompt pre-filled with text |
+| `:Pi prompt <name>` | Run a configured named prompt, such as `explain` or `review` |
+| `:Pi prompt <text>` | Send arbitrary text as a prompt |
+| `:Pi <text>` | Send arbitrary text as a prompt when its first word is not a subcommand |
+| `:Pi select` | Open the action picker |
+| `:Pi abort` | Abort Pi's current operation |
+| `:Pi checkpoint` | Capture a checkpoint before typing a prompt directly in Pi |
+| `:Pi review` | Review unaccepted changes |
+| `:Pi review turn` | Audit changes since the latest turn checkpoint |
+| `:Pi review session` | Audit changes since the Pi project session began |
+| `:Pi accept hunk` | Accept the current hunk |
+| `:Pi accept file` | Accept the current file |
+| `:Pi accept all` | Accept all pending files |
+| `:Pi reject hunk` | Reject the current hunk |
+| `:Pi reject file` | Reject the current file |
+| `:Pi status` | Show the turn and pending file/hunk counts |
 
 ### Change review
 
-Prompts submitted through the plugin automatically save modified project buffers and capture a turn checkpoint. Before typing a prompt directly into Pi's TUI, run `:Pi checkpoint`.
+pi.nvim builds each diff from Git tree snapshots of the files on disk. When review state is first initialized for a project, it snapshots the entire working tree as both the session starting point and the initial accepted baseline. This includes pre-existing tracked changes and non-ignored untracked files, so they are not mistaken for changes made by Pi.
+
+| Review command | Base (left side) | Current (right side) | Can accept/reject? |
+|----------------|------------------|----------------------|--------------------|
+| `:Pi review` | The accepted baseline | A fresh snapshot of the working tree | Yes |
+| `:Pi review turn` | The snapshot taken immediately before the latest submitted prompt or manual checkpoint | A fresh snapshot of the working tree | No; audit only |
+| `:Pi review session` | The snapshot taken when review state was initialized for the project | A fresh snapshot of the working tree | No; audit only |
+
+Prompts submitted through the plugin save modified project buffers and capture the turn snapshot before the prompt is sent to Pi. Before typing a prompt directly into Pi's TUI, run `:Pi checkpoint` so the turn diff has the correct starting point.
 
 - `:Pi review` reviews changes that have not been accepted yet.
 - `:Pi review turn` and `:Pi review session` open read-only audit diffs.
 - In a pending review, use `a`/`r` for the current hunk, `A`/`R` for the current file, and `q` to close.
 - `:Pi accept all` accepts every pending file. `:Pi status` shows the turn and pending file/hunk counts.
 
-Accepting changes only updates pi.nvim's private baseline; rejecting changes updates the working tree. Checkpoints use a temporary Git index and never read from or write to your real Git index. Existing uncommitted and untracked files are included in the initial accepted baseline, so they are not presented as Pi changes.
+Accepting a hunk or file copies its current content into pi.nvim's private accepted baseline, so it disappears from future pending reviews without changing the working tree. Rejecting copies content from that baseline back into the working tree. Snapshots use a temporary Git index and create no commits; pi.nvim never reads from or writes to your real Git index.
 
 ### Context Placeholders
 
@@ -98,6 +130,10 @@ require("pi").setup({
     cmd = "pi",               -- pi executable
     continue_session = true,  -- pass -c flag (continue previous session)
     auto_start = false,       -- open panel on setup
+    send_delay = 50,          -- delay in ms between clearing and pasting
+    startup_timeout = 5000,  -- startup timeout and initial Ctrl-C grace period in ms
+    max_retries = 10,         -- terminal startup poll attempts
+    clear_before_send = true, -- clear before later sends (the first send is never cleared)
   },
 
   project = {

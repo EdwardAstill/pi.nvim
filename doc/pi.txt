@@ -76,9 +76,9 @@ defaults are shown below.
       continue_session = true,     -- pass -c flag
       auto_start = false,          -- open panel on setup
       send_delay = 50,             -- ms between clear and paste
-      startup_timeout = 5000,      -- ms total timeout for terminal start
+      startup_timeout = 5000,      -- startup timeout and Ctrl-C grace period
       max_retries = 10,            -- poll attempts during startup
-      clear_before_send = true,    -- send Ctrl-C before pasting
+      clear_before_send = true,    -- clear before later sends, not the first
     },
 
     project = {

@@ -19,6 +19,40 @@ local has_snacks, Snacks = pcall(require, "snacks")
 ---@type table|nil
 local snacks_term = nil
 
+---@type boolean Whether pi.nvim has sent input to the current terminal process
+local sent_once = false
+
+---@type integer Incremented whenever terminal process state is reset
+local process_generation = 0
+
+---@type table[] Sends waiting to be dispatched to the current terminal process
+local send_queue = {}
+
+---@type boolean Whether a queued send is waiting for its paste delay
+local send_active = false
+
+---@type number Monotonic time after which Ctrl-C is safe for this process
+local clear_safe_at = 0
+
+---@type table[] Sends waiting for the requested terminal process to start
+local startup_queue = {}
+
+---@type boolean Whether the head of the startup queue is being polled
+local startup_polling = false
+
+---@type integer Incremented when queued startup sends are cancelled
+local startup_generation = 0
+
+local function cancel_startup_sends()
+  startup_generation = startup_generation + 1
+  startup_queue = {}
+  startup_polling = false
+end
+
+local function now_ms()
+  return vim.uv.hrtime() / 1000000
+end
+
 --- Build the pi command with flags.
 ---@return string
 local function build_cmd()
@@ -47,6 +81,11 @@ local function reset_state()
   M.chan = nil
   M.cwd = nil
   snacks_term = nil
+  sent_once = false
+  process_generation = process_generation + 1
+  send_queue = {}
+  send_active = false
+  clear_safe_at = 0
 end
 
 --- Set up autocmds to track terminal lifecycle.
@@ -231,7 +270,7 @@ function M.open(opts)
   local cwd = opts.cwd or require("pi.project").resolve_cwd()
 
   if cwd ~= M.cwd then
-    M.stop()
+    M.stop({ preserve_sends = true })
   end
 
   -- Already open and visible — just focus if requested
@@ -258,6 +297,9 @@ function M.open(opts)
   else
     open_manual(cmd, enter, cwd)
   end
+  if M.is_alive() and M.cwd == cwd then
+    clear_safe_at = now_ms() + config.opts.terminal.startup_timeout
+  end
 end
 
 --- Close the terminal window (keeps buffer/process alive).
@@ -269,7 +311,12 @@ function M.close()
 end
 
 --- Stop the terminal process and discard its buffer.
-function M.stop()
+---@param opts? { preserve_sends?: boolean }
+function M.stop(opts)
+  opts = opts or {}
+  if not opts.preserve_sends then
+    cancel_startup_sends()
+  end
   pcall(M.close)
 
   if M.chan and M.chan > 0 then
@@ -307,9 +354,71 @@ function M.focus()
   end
 end
 
---- Perform the actual send into the terminal.
---- When submit=true: Ctrl-C clear + bracketed paste + Enter (full submit).
---- When submit=false: Ctrl-C clear + raw keystrokes (no bracketed paste,
+local function is_current_process(item)
+  return item.generation == process_generation and item.chan == M.chan and item.cwd == M.cwd
+end
+
+local dispatch_next
+
+local function send_payload(item)
+  vim.defer_fn(function()
+    if not is_current_process(item) then
+      return
+    end
+
+    if item.submit then
+      vim.fn.chansend(item.chan, "\x1b[200~" .. item.text .. "\x1b[201~")
+      vim.fn.chansend(item.chan, "\r")
+    else
+      vim.fn.chansend(item.chan, item.text)
+    end
+    sent_once = true
+    send_active = false
+    dispatch_next()
+  end, item.send_delay)
+end
+
+local function clear_then_send(item)
+  if not is_current_process(item) then
+    return
+  end
+  vim.fn.chansend(item.chan, "\x03")
+  send_payload(item)
+end
+
+dispatch_next = function()
+  if send_active then
+    return
+  end
+
+  local item = table.remove(send_queue, 1)
+  if not item then
+    return
+  end
+  if not is_current_process(item) then
+    dispatch_next()
+    return
+  end
+
+  send_active = true
+  if item.clear_before_send and sent_once then
+    local startup_delay = math.max(0, math.ceil(clear_safe_at - now_ms()))
+    if startup_delay > 0 then
+      vim.defer_fn(function()
+        clear_then_send(item)
+      end, startup_delay)
+    else
+      clear_then_send(item)
+    end
+  else
+    send_payload(item)
+  end
+end
+
+--- Queue a send into the terminal.
+--- After the first send, optionally clear with Ctrl-C before inserting text.
+--- When submit=true: bracketed paste + Enter (full submit).
+--- When submit=false: raw keystrokes (no bracketed paste,
 ---   no Enter). The text should be a single line (no newlines) so it appears
 ---   in pi's editor for the user to augment before submitting.
 ---@param text string
@@ -320,61 +429,88 @@ local function do_send(text, submit, cwd)
     return
   end
 
-  -- Clear pi's editor with Ctrl-C
-  if config.opts.terminal.clear_before_send then
-    vim.fn.chansend(M.chan, "\x03")
-  end
-
-  vim.defer_fn(function()
-    if M.chan == nil or M.cwd ~= cwd then
-      return
-    end
-
-    if submit then
-      -- Bracketed paste + Enter for full submit
-      vim.fn.chansend(M.chan, "\x1b[200~" .. text .. "\x1b[201~")
-      vim.fn.chansend(M.chan, "\r")
-    else
-      -- Raw keystrokes — text appears in pi's editor for the user to augment
-      vim.fn.chansend(M.chan, text)
-    end
-  end, config.opts.terminal.send_delay)
+  send_queue[#send_queue + 1] = {
+    text = text,
+    submit = submit,
+    cwd = cwd,
+    chan = M.chan,
+    generation = process_generation,
+    clear_before_send = config.opts.terminal.clear_before_send,
+    send_delay = config.opts.terminal.send_delay,
+  }
+  dispatch_next()
 end
 
---- Poll for terminal readiness, then send. Gives up after max_retries.
----@param text string
----@param submit boolean
----@param attempt integer
----@param cwd string
-local function wait_and_send(text, submit, attempt, cwd)
-  local max_retries = config.opts.terminal.max_retries
-  local delay = math.floor(config.opts.terminal.startup_timeout / max_retries)
+local start_startup_poll
 
-  if attempt >= max_retries then
+local function poll_startup_queue(attempt, generation)
+  local item = startup_queue[1]
+  if generation ~= startup_generation or not item then
+    return
+  end
+  if attempt >= item.max_retries then
+    table.remove(startup_queue, 1)
+    startup_polling = false
     vim.notify(
-      string.format("Pi: terminal failed to start after %dms (%d retries)", config.opts.terminal.startup_timeout, max_retries),
+      string.format("Pi: terminal failed to start after %dms (%d retries)", item.startup_timeout, item.max_retries),
       vim.log.levels.ERROR
     )
+    start_startup_poll()
     return
   end
 
   vim.defer_fn(function()
-    if not M.is_alive() or M.cwd ~= cwd then
-      M.open({ cwd = cwd })
-      wait_and_send(text, submit, attempt + 1, cwd)
+    if generation ~= startup_generation or startup_queue[1] ~= item then
       return
     end
 
+    if not M.is_alive() or M.cwd ~= item.cwd then
+      M.open({ cwd = item.cwd })
+      poll_startup_queue(attempt + 1, generation)
+      return
+    end
     if not M.is_open() then
-      M.open({ cwd = cwd })
+      M.open({ cwd = item.cwd })
     end
 
-    if M.is_alive() and M.cwd == cwd then
-      do_send(text, submit, cwd)
+    if M.is_alive() and M.cwd == item.cwd then
+      repeat
+        item = table.remove(startup_queue, 1)
+        do_send(item.text, item.submit, item.cwd)
+        item = startup_queue[1]
+      until not item or item.cwd ~= M.cwd
+      startup_polling = false
+      start_startup_poll()
     else
-      wait_and_send(text, submit, attempt + 1, cwd)
+      poll_startup_queue(attempt + 1, generation)
     end
-  end, delay)
+  end, item.poll_delay)
+end
+
+start_startup_poll = function()
+  if startup_polling or #startup_queue == 0 then
+    return
+  end
+
+  startup_polling = true
+  local item = startup_queue[1]
+  if not M.is_alive() or M.cwd ~= item.cwd then
+    M.open({ cwd = item.cwd })
+  end
+  poll_startup_queue(0, startup_generation)
+end
+
+local function queue_startup_send(text, submit, cwd)
+  local max_retries = config.opts.terminal.max_retries
+  startup_queue[#startup_queue + 1] = {
+    text = text,
+    submit = submit,
+    cwd = cwd,
+    max_retries = max_retries,
+    startup_timeout = config.opts.terminal.startup_timeout,
+    poll_delay = math.floor(config.opts.terminal.startup_timeout / max_retries),
+  }
+  start_startup_poll()
 end
 
 --- Send a prompt to pi via bracketed paste.
@@ -386,9 +522,8 @@ function M.send(text, opts)
   local submit = opts.submit ~= false -- default true
   local cwd = opts.cwd or require("pi.project").resolve_cwd()
 
-  if not M.is_alive() or M.cwd ~= cwd then
-    M.open({ cwd = cwd })
-    wait_and_send(text, submit, 0, cwd)
+  if startup_polling or #startup_queue > 0 or not M.is_alive() or M.cwd ~= cwd then
+    queue_startup_send(text, submit, cwd)
     return
   end
 
@@ -400,7 +535,7 @@ function M.send(text, opts)
   if M.is_alive() and M.cwd == cwd then
     do_send(text, submit, cwd)
   else
-    wait_and_send(text, submit, 0, cwd)
+    queue_startup_send(text, submit, cwd)
   end
 end
 

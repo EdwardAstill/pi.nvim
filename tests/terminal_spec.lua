@@ -23,6 +23,97 @@ H.test("manual terminal launches in the explicit cwd", function()
   terminal.stop()
 end)
 
+H.test("first terminal send skips clear and later sends clear", function()
+  package.loaded.snacks = nil
+  package.loaded["pi.terminal"] = nil
+  local config = require("pi.config")
+  local terminal = require("pi.terminal")
+  local root = H.tmpdir()
+  config.setup({
+    terminal = {
+      cmd = "sh -c 'sleep 30'",
+      continue_session = false,
+      send_delay = 100,
+      startup_timeout = 10,
+      clear_before_send = true,
+    },
+  })
+
+  local original_chansend = vim.fn.chansend
+  local payloads = {}
+  vim.fn.chansend = function(_, data)
+    payloads[#payloads + 1] = data
+    return 1
+  end
+
+  local ok, test_err = xpcall(function()
+    terminal.send("first", { submit = false, cwd = root })
+    terminal.send("second", { submit = false, cwd = root })
+    wait_for(function()
+      return vim.tbl_contains(payloads, "second")
+    end)
+    H.eq({ "first", "\x03", "second" }, payloads)
+  end, debug.traceback)
+
+  vim.fn.chansend = original_chansend
+  terminal.stop()
+  if not ok then
+    error(test_err, 0)
+  end
+end)
+
+H.test("deferred send does not cross a same-cwd process restart", function()
+  package.loaded.snacks = nil
+  package.loaded["pi.terminal"] = nil
+  local config = require("pi.config")
+  local terminal = require("pi.terminal")
+  local root = H.tmpdir()
+  config.setup({
+    terminal = {
+      cmd = "sh -c 'sleep 30'",
+      continue_session = false,
+      send_delay = 100,
+      startup_timeout = 10,
+      clear_before_send = true,
+    },
+  })
+  terminal.open({ cwd = root })
+  wait_for(terminal.is_alive)
+
+  local original_chansend = vim.fn.chansend
+  local payloads = {}
+  vim.fn.chansend = function(_, data)
+    payloads[#payloads + 1] = data
+    return 1
+  end
+
+  local ok, test_err = xpcall(function()
+    terminal.send("initial", { submit = false, cwd = root })
+    wait_for(function()
+      return vim.tbl_contains(payloads, "initial")
+    end)
+
+    payloads = {}
+    terminal.send("stale", { submit = false, cwd = root })
+    terminal.stop()
+    terminal.open({ cwd = root })
+    wait_for(terminal.is_alive)
+
+    payloads = {}
+    terminal.send("fresh", { submit = false, cwd = root })
+    wait_for(function()
+      return vim.tbl_contains(payloads, "fresh")
+    end)
+    H.eq({ "fresh" }, payloads)
+  end, debug.traceback)
+
+  vim.fn.chansend = original_chansend
+  terminal.stop()
+  if not ok then
+    error(test_err, 0)
+  end
+end)
+
 H.test("opening another cwd replaces the terminal job", function()
   package.loaded["pi.terminal"] = nil
   local config = require("pi.config")
@@ -69,6 +160,47 @@ H.test("sending with another cwd replaces a live terminal", function()
     return table.concat(vim.api.nvim_buf_get_lines(terminal.buf, 0, -1, false), "\n"):find("prompt", 1, true)
   end)
   terminal.stop()
+end)
+
+H.test("sending for another cwd supersedes a queued send", function()
+  package.loaded.snacks = nil
+  package.loaded["pi.terminal"] = nil
+  local config = require("pi.config")
+  local terminal = require("pi.terminal")
+  local first = H.tmpdir()
+  local second = H.tmpdir()
+  config.setup({
+    terminal = {
+      cmd = "sh -c 'sleep 30'",
+      continue_session = false,
+      startup_timeout = 10,
+      send_delay = 100,
+      clear_before_send = true,
+    },
+  })
+
+  local original_chansend = vim.fn.chansend
+  local payloads = {}
+  vim.fn.chansend = function(_, data)
+    payloads[#payloads + 1] = data
+    return 1
+  end
+
+  local ok, test_err = xpcall(function()
+    terminal.send("superseded", { submit = false, cwd = first })
+    terminal.send("replacement", { submit = false, cwd = second })
+    wait_for(function()
+      return vim.tbl_contains(payloads, "replacement")
+    end)
+    H.eq({ "replacement" }, payloads)
+    H.eq(second, terminal.get_cwd())
+  end, debug.traceback)
+
+  vim.fn.chansend = original_chansend
+  terminal.stop()
+  if not ok then
+    error(test_err, 0)
+  end
 end)
 
 H.test("deferred send restores its requested cwd after replacement", function()
