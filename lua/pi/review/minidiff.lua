@@ -78,6 +78,9 @@ function M.attach(buf_id, ctx)
   if attachments[buf_id] then
     return nil, err("attach", "buffer is already attached to Pi review")
   end
+  if vim.g.minidiff_disable == true or vim.b[buf_id].minidiff_disable == true then
+    return nil, err("attach", "MiniDiff is disabled for buffer")
+  end
   local attachment = vim.deepcopy(ctx)
   attachment.previous_config = vim.deepcopy(vim.b[buf_id].minidiff_config)
   attachment.was_enabled = MiniDiff.get_buf_data(buf_id) ~= nil
@@ -188,7 +191,8 @@ function M.reject_hunk(buf_id)
     return nil, err("reject_hunk", "cursor is not on a hunk")
   end
 
-  local endofline = vim.bo[buf_id].endofline
+  local original_endofline = vim.bo[buf_id].endofline
+  local endofline = original_endofline
   if hunk_reaches_eof(buf_id, attachment, hunk) then
     endofline = attachment.ref_data:sub(-1) == "\n"
   end
@@ -196,10 +200,11 @@ function M.reject_hunk(buf_id)
     line_start = line_start,
     line_end = line_end,
   })
-  vim.bo[buf_id].endofline = endofline
   if not ok then
+    vim.bo[buf_id].endofline = original_endofline
     return nil, err("reject_hunk", reset_err)
   end
+  vim.bo[buf_id].endofline = endofline
   local fixendofline = vim.bo[buf_id].fixendofline
   if not endofline then
     vim.bo[buf_id].fixendofline = false
@@ -210,6 +215,7 @@ function M.reject_hunk(buf_id)
   vim.bo[buf_id].fixendofline = fixendofline
   vim.bo[buf_id].endofline = endofline
   if not wrote then
+    vim.bo[buf_id].endofline = original_endofline
     return nil, err("reject_hunk", write_err)
   end
   return true

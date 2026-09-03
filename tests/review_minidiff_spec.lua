@@ -11,7 +11,7 @@ local function fake_minidiff()
     if M.enabled[buf_id] then
       return
     end
-    if vim.g.minidiff_disable or vim.b[buf_id].minidiff_disable then
+    if vim.g.minidiff_disable == true or vim.b[buf_id].minidiff_disable == true then
       return
     end
     M.enabled[buf_id] = true
@@ -284,6 +284,77 @@ H.test("MiniDiff attach rolls back when buffer policy prevents enabling", functi
   H.eq("detach", detach_err.operation)
 end)
 
+local function attach_with_enabled_source_under_disable_policy(policy)
+  local root = H.repo()
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "working" })
+  local old_attaches = 0
+  local old_detaches = 0
+  local old_source = {
+    name = "old-source",
+    attach = function(source_buf)
+      old_attaches = old_attaches + 1
+      mini.set_ref_text(source_buf, "old reference\n")
+    end,
+    detach = function()
+      old_detaches = old_detaches + 1
+    end,
+  }
+  local previous_config = { source = old_source, delay = { text_change = 41 } }
+  vim.b[buf_id].minidiff_config = previous_config
+  mini.enable(buf_id)
+  if policy == "global" then
+    vim.g.minidiff_disable = true
+  else
+    vim.b[buf_id].minidiff_disable = true
+  end
+
+  local attached, attach_err = review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+  })
+  local result = {
+    attached = attached,
+    attach_err = attach_err,
+    config = vim.deepcopy(vim.b[buf_id].minidiff_config),
+    enabled = mini.enabled[buf_id] == true,
+    reference = mini.get_buf_data(buf_id) and mini.get_buf_data(buf_id).ref_text or nil,
+    old_attaches = old_attaches,
+    old_detaches = old_detaches,
+  }
+
+  vim.g.minidiff_disable = nil
+  vim.b[buf_id].minidiff_disable = nil
+  mini.disable(buf_id)
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+  return result, previous_config
+end
+
+local function assert_disable_policy_preserves_enabled_source(policy)
+  local result, previous_config = attach_with_enabled_source_under_disable_policy(policy)
+
+  H.eq(nil, result.attached)
+  H.eq("attach", result.attach_err.operation)
+  H.eq(previous_config, result.config)
+  H.eq(true, result.enabled)
+  H.eq("old reference\n", result.reference)
+  H.eq(1, result.old_attaches)
+  H.eq(0, result.old_detaches)
+end
+
+H.test("MiniDiff attach preserves an enabled source under global disable policy", function()
+  assert_disable_policy_preserves_enabled_source("global")
+end)
+
+H.test("MiniDiff attach preserves an enabled source under buffer disable policy", function()
+  assert_disable_policy_preserves_enabled_source("buffer")
+end)
+
 H.test("MiniDiff rejects duplicate attach without losing the original restore state", function()
   local root = H.repo()
   local mini = fake_minidiff()
@@ -510,6 +581,55 @@ H.test("MiniDiff rejecting an EOF hunk restores an accepted missing final newlin
   H.eq(14, result.size)
   H.eq(false, result.endofline)
   H.eq(result.original_tree, result.accepted_tree)
+end)
+
+H.test("MiniDiff failed EOF rejection preserves working text and final newline", function()
+  local root = H.repo()
+  H.write(root .. "/tracked.txt", "first\nold tail\n")
+  H.git(root, { "add", "tracked.txt" })
+  H.git(root, { "commit", "-qm", "failed EOF review base" })
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "first", "new tail" }, false)
+  local accepted_tree = checkpoint.state(root).accepted_tree
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = accepted_tree,
+    read_only = false,
+  }))
+  mini.set_hunks(buf_id, {
+    { type = "change", ref_start = 2, ref_count = 1, buf_start = 2, buf_count = 1 },
+  })
+  vim.api.nvim_win_set_buf(0, buf_id)
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.bo[buf_id].modifiable = false
+  local original_lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false)
+
+  local rejected, reject_err = review_diff.reject_hunk(buf_id)
+  local result = {
+    rejected = rejected,
+    reject_err = reject_err,
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    data = H.read(root .. "/tracked.txt"),
+    accepted_tree = checkpoint.state(root).accepted_tree,
+  }
+
+  vim.bo[buf_id].modifiable = true
+  assert(review_diff.detach(buf_id))
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(nil, result.rejected)
+  H.eq("reject_hunk", result.reject_err.operation)
+  H.eq(original_lines, result.lines)
+  H.eq(false, result.endofline)
+  H.eq(false, result.modifiable)
+  H.eq("first\nold tail\n", result.data)
+  H.eq(accepted_tree, result.accepted_tree)
 end)
 
 H.test("MiniDiff audit attachments keep their fixed base tree and cannot apply hunks", function()
