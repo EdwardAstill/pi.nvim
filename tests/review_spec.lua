@@ -183,6 +183,7 @@ H.test("pending review opens the real file in the current tab and owns only Pi m
   H.eq(true, observed.buffer_valid_after_close)
   H.eq(true, observed.window_valid_after_close)
   H.eq({ "attach", "goto_hunk", "goto_hunk", "detach" }, call_names(observed.calls))
+  H.eq(true, observed.calls[1][3].overlay)
   H.eq("previous", observed.calls[2][3])
   H.eq("next", observed.calls[3][3])
 end)

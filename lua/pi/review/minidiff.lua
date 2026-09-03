@@ -7,6 +7,32 @@ local function err(operation, message)
   return { kind = "minidiff", operation = operation, message = message }
 end
 
+local function set_overlay(buf_id, should_enable)
+  local desired = should_enable == true
+  local inspected, data = pcall(MiniDiff.get_buf_data, buf_id)
+  if not inspected then
+    return nil, "failed to inspect MiniDiff overlay: " .. tostring(data)
+  end
+  if not data then
+    return nil, "cannot set overlay for a disabled buffer"
+  end
+  if data.overlay == desired then
+    return true
+  end
+  local toggled, toggle_error = pcall(MiniDiff.toggle_overlay, buf_id)
+  if not toggled then
+    return nil, "failed to set MiniDiff overlay: " .. tostring(toggle_error)
+  end
+  local verified, updated = pcall(MiniDiff.get_buf_data, buf_id)
+  if not verified then
+    return nil, "failed to verify MiniDiff overlay: " .. tostring(updated)
+  end
+  if not updated or updated.overlay ~= desired then
+    return nil, "MiniDiff overlay did not reach the requested state"
+  end
+  return true
+end
+
 function M.refresh(buf_id)
   local attachment = attachments[buf_id]
   if not attachment then
@@ -63,7 +89,7 @@ local function apply_hunks(buf_id, hunks)
   return M.refresh(buf_id)
 end
 
-local function transition(buf_id, config, should_enable)
+local function transition(buf_id, config, should_enable, should_overlay)
   local inspected, data = pcall(MiniDiff.get_buf_data, buf_id)
   if not inspected then
     return nil, "failed to inspect MiniDiff state: " .. tostring(data)
@@ -103,7 +129,7 @@ local function transition(buf_id, config, should_enable)
   if not enabled_data then
     return nil, "MiniDiff did not enable buffer"
   end
-  return true
+  return set_overlay(buf_id, should_overlay)
 end
 
 local function restore(buf_id, attachment)
@@ -113,13 +139,18 @@ local function restore(buf_id, attachment)
     return nil, "failed to inspect Pi MiniDiff state: " .. tostring(pi_data)
   end
 
-  local restored, restore_error = transition(buf_id, attachment.previous_config, attachment.was_enabled)
+  local restored, restore_error = transition(
+    buf_id,
+    attachment.previous_config,
+    attachment.was_enabled,
+    attachment.was_overlay
+  )
   if restored then
     attachments[buf_id] = nil
     return true
   end
 
-  local rolled_back, rollback_error = transition(buf_id, pi_config, pi_data ~= nil)
+  local rolled_back, rollback_error = transition(buf_id, pi_config, pi_data ~= nil, pi_data and pi_data.overlay)
   if not rolled_back then
     return nil, restore_error .. "; failed to roll back Pi MiniDiff state: " .. rollback_error
   end
@@ -144,7 +175,9 @@ function M.attach(buf_id, ctx)
   end
   local attachment = vim.deepcopy(ctx)
   attachment.previous_config = vim.deepcopy(vim.b[buf_id].minidiff_config)
-  attachment.was_enabled = MiniDiff.get_buf_data(buf_id) ~= nil
+  local previous_data = MiniDiff.get_buf_data(buf_id)
+  attachment.was_enabled = previous_data ~= nil
+  attachment.was_overlay = previous_data and previous_data.overlay == true
   attachments[buf_id] = attachment
 
   local source = {
@@ -165,19 +198,12 @@ function M.attach(buf_id, ctx)
     end
   end
 
-  if attachment.was_enabled then
-    MiniDiff.disable(buf_id)
-  end
   local config = vim.deepcopy(attachment.previous_config or {})
   config.source = source
-  vim.b[buf_id].minidiff_config = config
-  MiniDiff.enable(buf_id)
-  if attachment.source_error then
-    local source_error = attachment.source_error
-    return attach_failure(buf_id, attachment, source_error)
-  end
-  if not MiniDiff.get_buf_data(buf_id) then
-    return attach_failure(buf_id, attachment, err("attach", "MiniDiff did not enable buffer"))
+  local activated, activation_error = transition(buf_id, config, true, attachment.overlay)
+  if not activated or attachment.source_error then
+    local failure = attachment.source_error or err("attach", activation_error)
+    return attach_failure(buf_id, attachment, failure)
   end
   return true
 end

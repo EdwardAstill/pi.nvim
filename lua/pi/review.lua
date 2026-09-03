@@ -278,6 +278,7 @@ local function open_file(cwd, state, view, file)
       scope = view.scope,
       base_tree = view.base_tree,
       read_only = view.read_only,
+      overlay = require("pi.config").opts.review.overlay,
     })
     if attached then
       review.attached = true

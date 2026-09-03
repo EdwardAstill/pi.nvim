@@ -45,6 +45,11 @@ local function fake_minidiff()
     return M.enabled[buf_id] and vim.deepcopy(M.data[buf_id]) or nil
   end
 
+  function M.toggle_overlay(buf_id)
+    assert(M.enabled[buf_id], "overlay requires an enabled buffer")
+    M.data[buf_id].overlay = not M.data[buf_id].overlay
+  end
+
   function M.set_ref_text(buf_id, text)
     assert(M.enabled[buf_id], "reference text requires an enabled buffer")
     M.data[buf_id].ref_text = text
@@ -146,6 +151,77 @@ H.test("MiniDiff attach loads accepted and absent paths as reference text", func
 
   delete_buffers(tracked, added)
   checkpoint.cleanup()
+end)
+
+H.test("MiniDiff attach shows the review overlay and restores a previous overlay", function()
+  local root = H.repo()
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "working" })
+  local old_source = {
+    name = "old-source",
+    attach = function(source_buf)
+      mini.set_ref_text(source_buf, "old reference\n")
+    end,
+  }
+  vim.b[buf_id].minidiff_config = { source = old_source }
+  mini.enable(buf_id)
+  mini.toggle_overlay(buf_id)
+
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+    overlay = true,
+  }))
+  local review_overlay = mini.get_buf_data(buf_id).overlay
+  assert(review_diff.detach(buf_id))
+  local restored_overlay = mini.get_buf_data(buf_id).overlay
+
+  mini.disable(buf_id)
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(true, review_overlay)
+  H.eq(true, restored_overlay)
+end)
+
+H.test("MiniDiff detach restores overlay off when the previous source enables it", function()
+  local root = H.repo()
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "working" })
+  local old_source = {
+    name = "old-source",
+    attach = function(source_buf)
+      mini.set_ref_text(source_buf, "old reference\n")
+      mini.toggle_overlay(source_buf)
+    end,
+  }
+  vim.b[buf_id].minidiff_config = { source = old_source }
+  mini.enable(buf_id)
+  mini.toggle_overlay(buf_id)
+
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+    overlay = true,
+  }))
+  local review_overlay = mini.get_buf_data(buf_id).overlay
+  assert(review_diff.detach(buf_id))
+  local restored_overlay = mini.get_buf_data(buf_id).overlay
+
+  mini.disable(buf_id)
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(true, review_overlay)
+  H.eq(false, restored_overlay)
 end)
 
 H.test("MiniDiff detach restores exact buffer-local config and enabled state", function()
@@ -343,6 +419,66 @@ H.test("MiniDiff attach failure restores the prior source and does not stay atta
 
   mini.disable(buf_id)
   delete_buffers(buf_id)
+end)
+
+H.test("MiniDiff attach rolls back a thrown enable and remains retryable", function()
+  local root = H.repo()
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "working" })
+  local old_source = {
+    name = "old-source",
+    attach = function(source_buf)
+      mini.set_ref_text(source_buf, "old reference\n")
+    end,
+  }
+  local previous_config = { source = old_source, delay = { text_change = 29 } }
+  vim.b[buf_id].minidiff_config = previous_config
+  mini.enable(buf_id)
+
+  local original_enable = mini.enable
+  local fail_pi_enable = true
+  mini.enable = function(source_buf)
+    local config = vim.b[source_buf].minidiff_config
+    if fail_pi_enable and config and config.source and config.source.name == "pi-accepted-tree" then
+      error("injected Pi enable failure")
+    end
+    return original_enable(source_buf)
+  end
+  local ctx = {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+    overlay = true,
+  }
+
+  local called, attached, attach_err = pcall(review_diff.attach, buf_id, ctx)
+  local data_after_failure = mini.get_buf_data(buf_id)
+  local after_failure = {
+    config = vim.deepcopy(vim.b[buf_id].minidiff_config),
+    enabled = data_after_failure ~= nil,
+    overlay = data_after_failure and data_after_failure.overlay,
+  }
+  fail_pi_enable = false
+  local retried, retry_err = review_diff.attach(buf_id, ctx)
+  local detached, detach_err = review_diff.detach(buf_id)
+
+  mini.enable = original_enable
+  mini.disable(buf_id)
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(true, called)
+  H.eq(nil, attached)
+  H.eq("attach", attach_err.operation)
+  assert(attach_err.message:find("injected Pi enable failure", 1, true))
+  H.eq(previous_config, after_failure.config)
+  H.eq(true, after_failure.enabled)
+  H.eq(false, after_failure.overlay)
+  H.eq(true, retried, vim.inspect(retry_err))
+  H.eq(true, detached, vim.inspect(detach_err))
 end)
 
 H.test("MiniDiff attach rolls back when buffer policy prevents enabling", function()
