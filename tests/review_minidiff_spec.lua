@@ -632,6 +632,117 @@ H.test("MiniDiff failed EOF rejection preserves working text and final newline",
   H.eq(accepted_tree, result.accepted_tree)
 end)
 
+H.test("MiniDiff rejection rolls back a reset that mutates then throws", function()
+  local root = H.repo()
+  H.write(root .. "/tracked.txt", "first\nold tail\n")
+  H.git(root, { "add", "tracked.txt" })
+  H.git(root, { "commit", "-qm", "partial reset review base" })
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "first", "new tail" }, false)
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+  }))
+  mini.set_hunks(buf_id, {
+    { type = "change", ref_start = 2, ref_count = 1, buf_start = 2, buf_count = 1 },
+  })
+  vim.api.nvim_win_set_buf(0, buf_id)
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.bo[buf_id].fixendofline = false
+  vim.bo[buf_id].modified = false
+  local original_do_hunks = mini.do_hunks
+  mini.do_hunks = function(...)
+    original_do_hunks(...)
+    error("reset mutated then failed")
+  end
+  local original = {
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    fixendofline = vim.bo[buf_id].fixendofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    modified = vim.bo[buf_id].modified,
+    data = H.read(root .. "/tracked.txt"),
+  }
+
+  local rejected, reject_err = review_diff.reject_hunk(buf_id)
+  local result = {
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    fixendofline = vim.bo[buf_id].fixendofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    modified = vim.bo[buf_id].modified,
+    data = H.read(root .. "/tracked.txt"),
+  }
+
+  assert(review_diff.detach(buf_id))
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(nil, rejected)
+  H.eq("reject_hunk", reject_err.operation)
+  assert(tostring(reject_err.message):find("reset mutated then failed", 1, true))
+  H.eq(original, result)
+  H.eq("first\nold tail\n", result.data)
+end)
+
+H.test("MiniDiff rejection rolls back when writing the reset buffer fails", function()
+  local root = H.repo()
+  H.write(root .. "/tracked.txt", "first\nold tail")
+  H.git(root, { "add", "tracked.txt" })
+  H.git(root, { "commit", "-qm", "failed write review base" })
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "first", "new tail" }, true)
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+  }))
+  mini.set_hunks(buf_id, {
+    { type = "change", ref_start = 2, ref_count = 1, buf_start = 2, buf_count = 1 },
+  })
+  vim.api.nvim_win_set_buf(0, buf_id)
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.bo[buf_id].fixendofline = true
+  vim.bo[buf_id].modified = false
+  vim.bo[buf_id].buftype = "nofile"
+  local original = {
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    fixendofline = vim.bo[buf_id].fixendofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    modified = vim.bo[buf_id].modified,
+    data = H.read(root .. "/tracked.txt"),
+  }
+
+  local rejected, reject_err = review_diff.reject_hunk(buf_id)
+  local result = {
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    fixendofline = vim.bo[buf_id].fixendofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    modified = vim.bo[buf_id].modified,
+    data = H.read(root .. "/tracked.txt"),
+  }
+
+  vim.bo[buf_id].buftype = ""
+  assert(review_diff.detach(buf_id))
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+
+  H.eq(nil, rejected)
+  H.eq("reject_hunk", reject_err.operation)
+  assert(tostring(reject_err.message):find("E382", 1, true))
+  H.eq(original, result)
+  H.eq("first\nold tail", result.data)
+end)
+
 H.test("MiniDiff audit attachments keep their fixed base tree and cannot apply hunks", function()
   local root = H.repo()
   local mini = fake_minidiff()

@@ -149,6 +149,49 @@ local function hunk_reaches_eof(buf_id, attachment, hunk)
   return reaches_buffer_eof or reaches_reference_eof
 end
 
+local function restore_buffer_state(buf_id, state)
+  local rollback_errors = {}
+  local function restore(label, action)
+    local ok, restore_err = pcall(action)
+    if not ok then
+      rollback_errors[#rollback_errors + 1] = label .. ": " .. tostring(restore_err)
+    end
+  end
+
+  restore("enable modification", function()
+    vim.bo[buf_id].modifiable = true
+  end)
+  restore("lines", function()
+    vim.api.nvim_buf_set_lines(buf_id, 0, -1, false, state.lines)
+  end)
+  restore("endofline", function()
+    vim.bo[buf_id].endofline = state.endofline
+  end)
+  restore("fixendofline", function()
+    vim.bo[buf_id].fixendofline = state.fixendofline
+  end)
+  restore("restore modifiable", function()
+    vim.bo[buf_id].modifiable = state.modifiable
+  end)
+  restore("modified", function()
+    vim.bo[buf_id].modified = state.modified
+  end)
+
+  if #rollback_errors > 0 then
+    return nil, table.concat(rollback_errors, "; ")
+  end
+  return true
+end
+
+local function reject_failure(buf_id, state, operation_error)
+  local restored, rollback_error = restore_buffer_state(buf_id, state)
+  local message = tostring(operation_error)
+  if not restored then
+    message = message .. "; rollback failed: " .. rollback_error
+  end
+  return nil, err("reject_hunk", message)
+end
+
 function M.accept_hunk(buf_id)
   local attachment = attachments[buf_id]
   if not attachment or attachment.scope ~= "pending" or attachment.read_only then
@@ -191,8 +234,14 @@ function M.reject_hunk(buf_id)
     return nil, err("reject_hunk", "cursor is not on a hunk")
   end
 
-  local original_endofline = vim.bo[buf_id].endofline
-  local endofline = original_endofline
+  local original = {
+    lines = vim.api.nvim_buf_get_lines(buf_id, 0, -1, false),
+    endofline = vim.bo[buf_id].endofline,
+    fixendofline = vim.bo[buf_id].fixendofline,
+    modifiable = vim.bo[buf_id].modifiable,
+    modified = vim.bo[buf_id].modified,
+  }
+  local endofline = original.endofline
   if hunk_reaches_eof(buf_id, attachment, hunk) then
     endofline = attachment.ref_data:sub(-1) == "\n"
   end
@@ -201,22 +250,19 @@ function M.reject_hunk(buf_id)
     line_end = line_end,
   })
   if not ok then
-    vim.bo[buf_id].endofline = original_endofline
-    return nil, err("reject_hunk", reset_err)
+    return reject_failure(buf_id, original, reset_err)
   end
   vim.bo[buf_id].endofline = endofline
-  local fixendofline = vim.bo[buf_id].fixendofline
   if not endofline then
     vim.bo[buf_id].fixendofline = false
   end
   local wrote, write_err = pcall(vim.api.nvim_buf_call, buf_id, function()
     vim.cmd("silent write")
   end)
-  vim.bo[buf_id].fixendofline = fixendofline
+  vim.bo[buf_id].fixendofline = original.fixendofline
   vim.bo[buf_id].endofline = endofline
   if not wrote then
-    vim.bo[buf_id].endofline = original_endofline
-    return nil, err("reject_hunk", write_err)
+    return reject_failure(buf_id, original, write_err)
   end
   return true
 end
