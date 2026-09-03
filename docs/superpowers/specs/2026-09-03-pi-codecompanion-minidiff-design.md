@@ -81,7 +81,12 @@ The README will recommend Node.js 22 or newer and Pi 0.80.4 or newer, matching
 the current pi-acp documentation. Runtime health checks use capability
 detection where projects do not expose a stable Lua version API.
 
-Users install and configure the dependencies explicitly. `pi.nvim` supplies an
+Users install and configure the dependencies explicitly. CodeCompanion does not
+currently export callable model or ACP-session-option pickers, so `pi.nvim`
+feature-detects those two internal picker modules and covers their expected
+surface with contract tests. The shims only invoke CodeCompanion's UI; they do
+not implement picker behavior and should be removed when public exports exist.
+`pi.nvim` supplies an
 ACP adapter factory and a documented CodeCompanion configuration snippet. It
 does not mutate a previously initialized CodeCompanion configuration.
 
@@ -90,7 +95,10 @@ does not mutate a previously initialized CodeCompanion configuration.
 Each Pi CodeCompanion chat is associated with one immutable normalized project
 root when the chat is created. `pi.nvim` tracks one preferred Pi chat buffer per
 project root. A hidden valid buffer is restored; an invalid or closed buffer is
-replaced. Other CodeCompanion chats and adapters are not affected.
+replaced. A managed chat may switch away from Pi, but must start a fresh chat to
+return to Pi because CodeCompanion starts the replacement ACP connection before
+emitting its adapter-change event. Other CodeCompanion chats and adapters are
+not affected.
 
 Checkpoint state changes from a single `current` value into a map keyed by
 normalized project root. Existing no-cwd calls continue to target the active

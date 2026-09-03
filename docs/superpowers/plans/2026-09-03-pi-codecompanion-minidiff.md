@@ -14,7 +14,9 @@
 
 - Do not implement or vendor RPC, ACP, chat, composer, model-picker, or diff UI replacements.
 - Keep all pi.nvim source in Lua and never touch the user's real Git index.
-- Use only documented dependency APIs except for isolated, feature-detected codecompanion-ui draft recovery.
+- Use documented dependency APIs except for isolated, feature-detected
+  CodeCompanion picker and codecompanion-ui draft compatibility shims, covered
+  by contract tests until public callable exports exist.
 - Run `make test` after every task and `make smoke` at every milestone.
 - Stop for review after each of the three milestones.
 
