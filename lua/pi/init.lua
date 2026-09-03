@@ -218,7 +218,7 @@ function M.review(scope)
     notify_error("checkpoint failed", ensure_err)
     return false
   end
-  return require("pi.review").open(scope)
+  return require("pi.review").open(scope, cwd)
 end
 
 ---@param target "hunk"|"file"|"all"

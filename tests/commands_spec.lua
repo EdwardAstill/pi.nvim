@@ -102,3 +102,42 @@ H.test("Pi commands expose checkpoint review actions and status", function()
   vim.g.loaded_pi = nil
   package.loaded.pi = nil
 end)
+
+H.test("Pi review command passes its explicit project cwd through the public facade", function()
+  local calls = {}
+  package.loaded.pi = nil
+  package.loaded["pi.project"] = {
+    resolve_cwd = function()
+      return "/tmp/pi-explicit-project"
+    end,
+  }
+  package.loaded["pi.checkpoint"] = {
+    ensure = function(cwd)
+      calls[#calls + 1] = { "ensure", cwd }
+      return { available = true }
+    end,
+  }
+  package.loaded["pi.review"] = {
+    open = function(scope, cwd)
+      calls[#calls + 1] = { "open", scope, cwd }
+      return true
+    end,
+  }
+  vim.g.loaded_pi = nil
+  pcall(vim.api.nvim_del_user_command, "Pi")
+  vim.cmd.runtime("plugin/pi.lua")
+
+  vim.cmd("Pi review session")
+
+  H.eq({
+    { "ensure", "/tmp/pi-explicit-project" },
+    { "open", "session", "/tmp/pi-explicit-project" },
+  }, calls)
+
+  pcall(vim.api.nvim_del_user_command, "Pi")
+  vim.g.loaded_pi = nil
+  package.loaded.pi = nil
+  package.loaded["pi.project"] = nil
+  package.loaded["pi.checkpoint"] = nil
+  package.loaded["pi.review"] = nil
+end)

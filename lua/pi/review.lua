@@ -2,145 +2,270 @@ local M = {}
 
 local current
 
-local function notify_error(err)
-  vim.notify("Pi: " .. (err.message or tostring(err)), vim.log.levels.ERROR)
+local function notify_error(value)
+  local message = type(value) == "table" and value.message or tostring(value or "unknown error")
+  vim.notify("Pi: " .. message, vim.log.levels.ERROR)
 end
 
-local function buffer_lines(data)
-  if data == "" then
-    return { "" }, false
+local function normalize_cwd(cwd)
+  return vim.fs.normalize(vim.fn.fnamemodify(cwd, ":p"))
+end
+
+local function call_minidiff(method, ...)
+  local loaded, integration = pcall(require, "pi.review.minidiff")
+  if not loaded then
+    notify_error(integration)
+    return false
   end
-  local endofline = data:sub(-1) == "\n"
-  if endofline then
-    data = data:sub(1, -2)
+  local called, result, action_err = pcall(integration[method], ...)
+  if not called then
+    notify_error(result)
+    return false
   end
-  return vim.split(data, "\n", { plain = true }), endofline
-end
-
-local function buffer_data(buf)
-  local data = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
-  if vim.bo[buf].endofline then
-    data = data .. "\n"
+  if not result then
+    notify_error(action_err)
+    return false
   end
-  return data
+  return true
 end
 
-local function set_data(buf, data)
-  local lines, endofline = buffer_lines(data)
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].endofline = endofline
-  vim.bo[buf].modified = false
-end
-
-local function file_for_path(files, path)
-  for _, file in ipairs(files) do
-    if file.path == path then
-      return file
+local function mapping_for(buf, lhs)
+  for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+    if mapping.lhs == lhs then
+      return mapping
     end
   end
 end
 
-local function map(buf, lhs, rhs, desc)
-  if lhs then
-    vim.keymap.set("n", lhs, rhs, { buffer = buf, silent = true, desc = desc })
+local function restore_mapping(buf, mapping)
+  local rhs = type(mapping.callback) == "function" and mapping.callback or mapping.rhs
+  vim.keymap.set("n", mapping.lhs, rhs, {
+    buffer = buf,
+    desc = mapping.desc,
+    expr = mapping.expr == 1,
+    nowait = mapping.nowait == 1,
+    remap = mapping.noremap == 0,
+    silent = mapping.silent == 1,
+  })
+end
+
+local function map(review, lhs, callback, desc)
+  if not lhs or not review.buf then
+    return
+  end
+  review.mappings[#review.mappings + 1] = {
+    lhs = lhs,
+    previous = mapping_for(review.buf, lhs),
+    desc = desc,
+  }
+  vim.keymap.set("n", lhs, callback, {
+    buffer = review.buf,
+    silent = true,
+    desc = desc,
+  })
+end
+
+local function remove_mappings(review)
+  if not review.buf or not vim.api.nvim_buf_is_valid(review.buf) then
+    return
+  end
+  for index = #review.mappings, 1, -1 do
+    local mapping = review.mappings[index]
+    local installed = mapping_for(review.buf, mapping.lhs)
+    if installed and installed.desc == mapping.desc then
+      pcall(vim.keymap.del, "n", mapping.lhs, { buffer = review.buf })
+      if mapping.previous then
+        pcall(restore_mapping, review.buf, mapping.previous)
+      end
+    end
   end
 end
 
-local function open_file(view, file, original_tab)
-  local state = require("pi.checkpoint").state()
-  local git = state.git
-  local base_entry, base_err = git:entry(view.base_tree, file.path)
+local function winfixbuf(win)
+  local ok, value = pcall(function()
+    return vim.wo[win].winfixbuf
+  end)
+  return ok and value == true
+end
+
+local function ordinary_window(win)
+  if not vim.api.nvim_win_is_valid(win) or winfixbuf(win) then
+    return false
+  end
+  local buf = vim.api.nvim_win_get_buf(win)
+  return vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == ""
+end
+
+local function editing_window()
+  local win = vim.api.nvim_get_current_win()
+  if ordinary_window(win) then
+    return win
+  end
+  for _, candidate in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if ordinary_window(candidate) then
+      return candidate
+    end
+  end
+
+  local split, split_err = pcall(vim.cmd, "botright split")
+  if not split then
+    return nil, split_err
+  end
+  win = vim.api.nvim_get_current_win()
+  pcall(function()
+    vim.wo[win].winfixbuf = false
+  end)
+  return win
+end
+
+local function absolute_path(root, path)
+  local is_absolute = type(path) == "string"
+    and (path:match("^[/\\]") ~= nil or path:match("^%a:[/\\]") ~= nil)
+  if type(path) ~= "string" or path == "" or path:find("\0", 1, true) or is_absolute then
+    return nil
+  end
+  local absolute = vim.fs.normalize(root .. "/" .. path)
+  if absolute == root or not require("pi.project").is_within(root, absolute) then
+    return nil
+  end
+  return absolute
+end
+
+local function ordinary_blob(entry)
+  return entry
+    and entry.type == "blob"
+    and (entry.mode == "100644" or entry.mode == "100755")
+end
+
+local function inspect_file(state, view, file)
+  local root = vim.fs.normalize(state.git_root)
+  local absolute = absolute_path(root, file.path)
+  local base_entry, base_err = state.git:entry(view.base_tree, file.path)
   if base_err then
     return nil, base_err
   end
-  local work_entry, work_err = git:entry(view.current_tree, file.path)
+  local work_entry, work_err = state.git:entry(view.current_tree, file.path)
   if work_err then
     return nil, work_err
   end
-  local text = not file.binary
-    and (not base_entry or base_entry.type == "blob")
-    and (not work_entry or work_entry.type == "blob")
-    and (not base_entry or base_entry.mode ~= "120000")
-    and (not work_entry or work_entry.mode ~= "120000")
-
-  local base_data = ""
-  if text and base_entry then
-    local base_file, read_err = git:read_file(view.base_tree, file.path)
-    if not base_file then
-      return nil, read_err
-    end
-    base_data = base_file.data
-  end
-
-  vim.cmd.tabnew()
-  local tab = vim.api.nvim_get_current_tabpage()
-  local base_win = vim.api.nvim_get_current_win()
-  local base_buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(base_win, base_buf)
-  vim.api.nvim_buf_set_name(base_buf, string.format("[Pi %s] %s", view.scope, file.path))
-  set_data(base_buf, text and base_data or "Non-text change; use file accept/reject.")
-
-  vim.cmd.vsplit()
-  local work_win = vim.api.nvim_get_current_win()
-  local work_buf
-  if text then
-    local absolute = state.git_root .. "/" .. file.path
-    work_buf = vim.fn.bufadd(absolute)
-    vim.fn.bufload(work_buf)
-    pcall(vim.api.nvim_buf_call, work_buf, function()
-      vim.cmd.checktime()
-    end)
-  else
-    work_buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(work_buf, "[Pi current] " .. file.path)
-    set_data(work_buf, "Non-text change; use file accept/reject.")
-  end
-  vim.api.nvim_win_set_buf(work_win, work_buf)
-
-  vim.api.nvim_win_call(base_win, function()
-    vim.cmd.diffthis()
-  end)
-  vim.api.nvim_win_call(work_win, function()
-    vim.cmd.diffthis()
-  end)
-
-  current = {
-    scope = view.scope,
-    read_only = view.read_only,
-    view = view,
-    file = file,
-    original_tab = original_tab,
-    tab = tab,
-    base_buf = base_buf,
-    work_buf = work_buf,
-    base_win = base_win,
-    work_win = work_win,
-    text = text,
+  local stat = absolute and vim.uv.fs_lstat(absolute) or nil
+  local exists = stat
+    and (stat.type == "file" or stat.type == "link")
+    and vim.fn.filereadable(absolute) == 1
+    or false
+  local supported = absolute ~= nil
+    and exists
+    and stat.type == "file"
+    and not file.binary
+    and ordinary_blob(work_entry)
+    and (base_entry == nil or ordinary_blob(base_entry))
+    or false
+  return {
+    absolute = absolute,
+    base_entry = base_entry,
+    work_entry = work_entry,
+    exists = exists,
+    supported = supported,
   }
+end
 
-  local keys = require("pi.config").opts.review.keymaps
-  for _, buf in ipairs({ base_buf, work_buf }) do
-    map(buf, keys.close, M.close, "Pi: Close review")
+local function open_real_file(inspection)
+  if not inspection.exists then
+    return nil, nil, nil
   end
-  if not view.read_only then
-    if text then
-      map(work_buf, keys.accept_hunk, function()
+  local win, win_err = editing_window()
+  if not win then
+    return nil, nil, win_err
+  end
+  local buf = vim.fn.bufadd(inspection.absolute)
+  local loaded, load_err = pcall(vim.fn.bufload, buf)
+  if not loaded then
+    return nil, nil, load_err
+  end
+  pcall(vim.api.nvim_buf_call, buf, function()
+    vim.cmd.checktime()
+  end)
+  local shown, show_err = pcall(vim.api.nvim_win_set_buf, win, buf)
+  if not shown then
+    return nil, nil, show_err
+  end
+  vim.api.nvim_set_current_win(win)
+  return buf, win, nil
+end
+
+local function install_mappings(review)
+  if not review.buf then
+    return
+  end
+  local keys = require("pi.config").opts.review.keymaps
+  if review.supported then
+    map(review, keys.previous_hunk, function()
+      call_minidiff("goto_hunk", review.buf, "previous")
+    end, "Pi: Previous hunk")
+    map(review, keys.next_hunk, function()
+      call_minidiff("goto_hunk", review.buf, "next")
+    end, "Pi: Next hunk")
+  end
+  if not review.read_only then
+    if review.supported then
+      map(review, keys.accept_hunk, function()
         M.accept("hunk")
       end, "Pi: Accept hunk")
-      map(work_buf, keys.reject_hunk, function()
+      map(review, keys.reject_hunk, function()
         M.reject("hunk")
       end, "Pi: Reject hunk")
     end
-    map(work_buf, keys.accept_file, function()
+    map(review, keys.accept_file, function()
       M.accept("file")
     end, "Pi: Accept file")
-    map(work_buf, keys.reject_file, function()
+    map(review, keys.reject_file, function()
       M.reject("file")
     end, "Pi: Reject file")
   end
-  vim.api.nvim_set_current_win(work_win)
-  return true, nil
+  map(review, keys.close, M.close, "Pi: Close review")
+end
+
+local function open_file(cwd, state, view, file)
+  local inspection, inspect_err = inspect_file(state, view, file)
+  if not inspection then
+    return nil, inspect_err
+  end
+  local buf, win, open_err = open_real_file(inspection)
+  if open_err then
+    return nil, open_err
+  end
+
+  local review = {
+    scope = view.scope,
+    cwd = cwd,
+    path = file.path,
+    buf = buf,
+    win = win,
+    read_only = view.read_only,
+    supported = inspection.supported,
+    attached = false,
+    file = file,
+    view = view,
+    mappings = {},
+  }
+  current = review
+
+  if review.supported then
+    local attached = call_minidiff("attach", buf, {
+      cwd = cwd,
+      path = file.path,
+      scope = view.scope,
+      base_tree = view.base_tree,
+      read_only = view.read_only,
+    })
+    if attached then
+      review.attached = true
+    else
+      review.supported = false
+    end
+  end
+  install_mappings(review)
+  return true
 end
 
 function M.current()
@@ -153,65 +278,27 @@ function M.close()
     return false
   end
   current = nil
-  for _, win in ipairs({ review.base_win, review.work_win }) do
-    if vim.api.nvim_win_is_valid(win) then
-      pcall(vim.api.nvim_win_call, win, function()
-        vim.cmd.diffoff()
-      end)
-    end
-  end
-  if vim.api.nvim_tabpage_is_valid(review.tab) then
-    pcall(vim.api.nvim_set_current_tabpage, review.tab)
-    pcall(vim.cmd, "tabclose!")
-  end
-  if vim.api.nvim_buf_is_valid(review.base_buf) then
-    pcall(vim.api.nvim_buf_delete, review.base_buf, { force = true })
-  end
-  if review.work_buf ~= review.base_buf
-    and vim.api.nvim_buf_is_valid(review.work_buf)
-    and vim.bo[review.work_buf].buftype == "nofile"
-  then
-    pcall(vim.api.nvim_buf_delete, review.work_buf, { force = true })
-  end
-  if vim.api.nvim_tabpage_is_valid(review.original_tab) then
-    pcall(vim.api.nvim_set_current_tabpage, review.original_tab)
+  remove_mappings(review)
+  if review.attached and review.buf and vim.api.nvim_buf_is_valid(review.buf) then
+    return call_minidiff("detach", review.buf)
   end
   return true
 end
 
-local function refresh(path)
-  local original_tab = current and current.original_tab or vim.api.nvim_get_current_tabpage()
-  M.close()
-  local view, view_err = require("pi.checkpoint").view("pending")
-  if not view then
-    notify_error(view_err)
-    return false
-  end
-  if #view.files == 0 then
-    return true
-  end
-  local file = file_for_path(view.files, path) or view.files[1]
-  local opened, open_err = open_file(view, file, original_tab)
-  if not opened then
-    notify_error(open_err)
-    return false
-  end
-  return true
-end
-
-function M.open(scope)
+function M.open(scope, cwd)
   scope = scope or "pending"
+  cwd = normalize_cwd(cwd or require("pi.project").resolve_cwd())
   local checkpoint = require("pi.checkpoint")
-  local state = checkpoint.state()
+  local state = checkpoint.state(cwd)
   if not state then
     local ensure_err
-    state, ensure_err = checkpoint.ensure(require("pi.project").resolve_cwd())
+    state, ensure_err = checkpoint.ensure(cwd)
     if not state then
       notify_error(ensure_err)
       return false
     end
   end
-  local view, view_err = checkpoint.view(scope)
+  local view, view_err = checkpoint.view(scope, cwd)
   if not view then
     notify_error(view_err)
     return false
@@ -221,7 +308,6 @@ function M.open(scope)
     return false
   end
 
-  local original_tab = vim.api.nvim_get_current_tabpage()
   vim.ui.select(view.files, {
     prompt = "Pi " .. scope .. " review",
     format_item = function(file)
@@ -234,87 +320,112 @@ function M.open(scope)
     if not file then
       return
     end
-    local ok, open_err = open_file(view, file, original_tab)
-    if not ok then
+    if current then
+      M.close()
+    end
+    local opened, open_err = open_file(cwd, state, view, file)
+    if not opened then
       notify_error(open_err)
-      return
     end
   end)
   return true
 end
 
-function M.accept(target)
-  if target == "all" then
-    local ok, action_err = require("pi.checkpoint").accept_all()
-    if not ok then
-      notify_error(action_err)
-      return false
-    end
-    if current then
-      return refresh(current.file.path)
-    end
+local function refresh_current()
+  if not current or not current.attached then
     return true
   end
-  if not current or current.read_only then
+  return call_minidiff("refresh", current.buf)
+end
+
+function M.accept(target)
+  local review = current
+  if review and review.read_only then
     return false
   end
-  local path = current.file.path
-  if target == "file" then
-    local ok, action_err = require("pi.checkpoint").accept_file(path)
+  if target == "all" then
+    local cwd = review and review.cwd or normalize_cwd(require("pi.project").resolve_cwd())
+    local ok, action_err = require("pi.checkpoint").accept_all(cwd)
     if not ok then
       notify_error(action_err)
       return false
     end
-    return refresh(path)
+    return call_minidiff("refresh_all", cwd)
   end
-  if target ~= "hunk" or not current.text then
+  if not review then
     return false
   end
-  local ok, diff_err = pcall(vim.api.nvim_win_call, current.work_win, function()
-    vim.cmd.diffput()
-  end)
+  if target == "hunk" then
+    if not review.supported or not review.attached then
+      return false
+    end
+    return call_minidiff("accept_hunk", review.buf)
+  end
+  if target ~= "file" then
+    return false
+  end
+  local ok, action_err = require("pi.checkpoint").accept_file(review.path, review.cwd)
   if not ok then
-    vim.notify("Pi: " .. tostring(diff_err), vim.log.levels.WARN)
-    return false
-  end
-  local accepted, action_err = require("pi.checkpoint").accept_text(path, buffer_data(current.base_buf))
-  if not accepted then
     notify_error(action_err)
     return false
   end
-  return refresh(path)
+  return refresh_current()
+end
+
+local function loaded_buffer(review)
+  if review.buf and vim.api.nvim_buf_is_valid(review.buf) and vim.api.nvim_buf_is_loaded(review.buf) then
+    return review.buf
+  end
+  local state = require("pi.checkpoint").state(review.cwd)
+  local absolute = state and state.git_root and absolute_path(vim.fs.normalize(state.git_root), review.path) or nil
+  local buf = absolute and vim.fn.bufnr(absolute, false) or -1
+  if buf >= 0 and vim.api.nvim_buf_is_loaded(buf) then
+    return buf
+  end
 end
 
 function M.reject(target)
-  if not current or current.read_only then
+  local review = current
+  if not review or review.read_only then
     return false
   end
-  local path = current.file.path
-  if target == "file" then
-    local ok, action_err = require("pi.checkpoint").reject_file(path)
-    if not ok then
-      notify_error(action_err)
+  if target == "hunk" then
+    if not review.supported or not review.attached then
       return false
     end
-    if vim.api.nvim_buf_is_valid(current.work_buf) and vim.bo[current.work_buf].buftype == "" then
-      pcall(vim.api.nvim_buf_call, current.work_buf, function()
-        vim.cmd("edit!")
-      end)
+    return call_minidiff("reject_hunk", review.buf)
+  end
+  if target ~= "file" then
+    return false
+  end
+
+  local buf = loaded_buffer(review)
+  if buf and vim.bo[buf].modified then
+    local choice = vim.fn.confirm(
+      "Discard unsaved changes and reject " .. review.path .. "?",
+      "&Reject\n&Cancel",
+      2
+    )
+    if choice ~= 1 then
+      return false
     end
-    return refresh(path)
   end
-  if target ~= "hunk" or not current.text then
-    return false
-  end
-  local ok, diff_err = pcall(vim.api.nvim_win_call, current.work_win, function()
-    vim.cmd.diffget()
-    vim.cmd.write()
-  end)
+
+  local ok, action_err = require("pi.checkpoint").reject_file(review.path, review.cwd)
   if not ok then
-    vim.notify("Pi: " .. tostring(diff_err), vim.log.levels.WARN)
+    notify_error(action_err)
     return false
   end
-  return refresh(path)
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    local reloaded, reload_err = pcall(vim.api.nvim_buf_call, buf, function()
+      vim.cmd("silent edit!")
+    end)
+    if not reloaded then
+      notify_error(reload_err)
+      return false
+    end
+  end
+  return true
 end
 
 return M
