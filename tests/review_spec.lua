@@ -7,7 +7,16 @@ local function fake_minidiff()
     return true
   end
   function M.attach(buf, ctx) return record("attach", buf, vim.deepcopy(ctx)) end
-  function M.detach(buf) return record("detach", buf) end
+  function M.detach(buf)
+    M.calls[#M.calls + 1] = { "detach", buf }
+    if M.detach_failure == "return" then
+      return nil, { kind = "minidiff", operation = "detach", message = "injected detach failure" }
+    end
+    if M.detach_failure == "throw" then
+      error("injected detach throw")
+    end
+    return true
+  end
   function M.refresh(buf) return record("refresh", buf) end
   function M.refresh_all(cwd) return record("refresh_all", cwd) end
   function M.accept_hunk(buf) return record("accept_hunk", buf) end
@@ -84,6 +93,14 @@ local function mapping_callback(buf, lhs)
   if not buf then return nil end
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
     if mapping.lhs == lhs then return mapping.callback end
+  end
+end
+
+local function mapping_by_api_lhs(buf, lhs)
+  for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+    if (mapping.lhsraw or mapping.lhs) == lhs then
+      return mapping
+    end
   end
 end
 
@@ -487,4 +504,241 @@ H.test("close removes only Pi mappings and leaves the real buffer and window int
   H.eq(true, result.win_valid)
   H.eq(buf, result.win_buf)
   H.eq({ "attach", "detach" }, call_names(result.calls))
+end)
+
+H.test("configured leader mapping restores the exact prior buffer mapping after leader changes", function()
+  local root = H.repo()
+  local checkpoint, review = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local config = require("pi.config")
+  local original_keys = vim.deepcopy(config.opts.review.keymaps)
+  local original_leader = vim.g.mapleader
+  vim.g.mapleader = " "
+  config.opts.review.keymaps.close = "<leader>x"
+  local api_lhs = vim.api.nvim_replace_termcodes("<leader>x", true, true, true)
+  local target = vim.fn.bufadd(root .. "/tracked.txt")
+  vim.fn.bufload(target)
+  vim.keymap.set("n", "<leader>x", "zx", {
+    buffer = target,
+    desc = "Original leader mapping",
+    nowait = true,
+    remap = true,
+  })
+  local ui = test_tab()
+
+  choose_first(function() return review.open("pending", root) end)
+  local during = mapping_by_api_lhs(target, api_lhs)
+  vim.g.mapleader = ","
+  local closed = review.close()
+  local restored = mapping_by_api_lhs(target, api_lhs)
+
+  config.opts.review.keymaps = original_keys
+  vim.g.mapleader = original_leader
+  cleanup_ui(ui)
+  checkpoint.cleanup()
+
+  H.eq("Pi: Close review", during and during.desc)
+  H.eq(true, closed)
+  H.eq({
+    rhs = "zx",
+    desc = "Original leader mapping",
+    expr = 0,
+    nowait = 1,
+    noremap = 0,
+    silent = 0,
+  }, restored and {
+    rhs = restored.rhs,
+    desc = restored.desc,
+    expr = restored.expr,
+    nowait = restored.nowait,
+    noremap = restored.noremap,
+    silent = restored.silent,
+  })
+end)
+
+H.test("close preserves a user remap that replaced Pi's exact mapping", function()
+  local root = H.repo()
+  local checkpoint, review = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  choose_first(function() return review.open("pending", root) end)
+  local buf = current_buf(review.current())
+  vim.keymap.set("n", "q", "zz", {
+    buffer = buf,
+    desc = "Pi: Close review",
+  })
+
+  local closed = review.close()
+  local replaced
+  for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+    if mapping.lhs == "q" then replaced = mapping end
+  end
+
+  cleanup_ui(ui)
+  checkpoint.cleanup()
+  H.eq(true, closed)
+  H.eq("zz", replaced and replaced.rhs)
+end)
+
+local function detach_failure_case(mode)
+  local root = H.repo()
+  local checkpoint, review, mini = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  choose_first(function() return review.open("pending", root) end)
+  local original = review.current()
+  local buf = current_buf(original)
+  local mappings = pi_mappings(buf)
+  local original_notify = vim.notify
+  vim.notify = function() end
+  mini.detach_failure = mode
+  local first = review.close()
+  local retained = review.current()
+  local retained_mappings = pi_mappings(buf)
+  mini.detach_failure = nil
+  local second = review.close()
+  vim.notify = original_notify
+  local result = {
+    first = first,
+    retained = retained,
+    retained_mappings = retained_mappings,
+    second = second,
+    final = review.current(),
+    final_mappings = pi_mappings(buf),
+    calls = vim.deepcopy(mini.calls),
+  }
+  cleanup_ui(ui)
+  checkpoint.cleanup()
+  return original, mappings, result
+end
+
+local function assert_detach_failure_is_retryable(mode)
+  local original, mappings, result = detach_failure_case(mode)
+  H.eq(false, result.first)
+  H.eq(original, result.retained)
+  H.eq(mappings, result.retained_mappings)
+  H.eq(true, result.second)
+  H.eq(nil, result.final)
+  H.eq({}, result.final_mappings)
+  H.eq({ "attach", "detach", "detach" }, call_names(result.calls))
+end
+
+H.test("returned MiniDiff detach failure retains review state for a successful retry", function()
+  assert_detach_failure_is_retryable("return")
+end)
+
+H.test("thrown MiniDiff detach failure retains review state for a successful retry", function()
+  assert_detach_failure_is_retryable("throw")
+end)
+
+H.test("opening another review aborts when the existing MiniDiff detach fails", function()
+  local root = H.repo()
+  local checkpoint, review, mini = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  choose_first(function() return review.open("pending", root) end)
+  local original = review.current()
+  local original_notify = vim.notify
+  vim.notify = function() end
+  mini.detach_failure = "return"
+  local opened = choose_first(function() return review.open("pending", root) end)
+  local retained = review.current()
+  local calls_before_cleanup = vim.deepcopy(mini.calls)
+  mini.detach_failure = nil
+  vim.notify = original_notify
+  cleanup_ui(ui, review)
+  checkpoint.cleanup()
+  H.eq(true, opened)
+  H.eq(original, retained)
+  H.eq({ "attach", "detach" }, call_names(calls_before_cleanup))
+end)
+
+H.test("newer review picker callbacks supersede older callbacks", function()
+  local root = H.repo()
+  local checkpoint, review, mini = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  local original_select = vim.ui.select
+  local pending = {}
+  vim.ui.select = function(items, _, callback)
+    pending[#pending + 1] = { item = items[1], callback = callback }
+  end
+  local first = review.open("pending", root)
+  local second = review.open("pending", root)
+  vim.ui.select = original_select
+
+  pending[2].callback(pending[2].item, 1)
+  local selected = review.current()
+  pending[1].callback(pending[1].item, 1)
+  local after_stale = review.current()
+  local calls = vim.deepcopy(mini.calls)
+
+  cleanup_ui(ui, review)
+  checkpoint.cleanup()
+  H.eq(true, first)
+  H.eq(true, second)
+  H.eq(selected, after_stale)
+  H.eq({ "attach" }, call_names(calls))
+end)
+
+H.test("close invalidates a pending picker callback", function()
+  local root = H.repo()
+  local checkpoint, review, mini = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  local original_select = vim.ui.select
+  local pending
+  vim.ui.select = function(items, _, callback)
+    pending = { item = items[1], callback = callback }
+  end
+  local opened = review.open("pending", root)
+  vim.ui.select = original_select
+
+  local closed = review.close()
+  pending.callback(pending.item, 1)
+  local current = review.current()
+  local calls = vim.deepcopy(mini.calls)
+
+  cleanup_ui(ui, review)
+  checkpoint.cleanup()
+  H.eq(true, opened)
+  H.eq(false, closed)
+  H.eq(nil, current)
+  H.eq({}, calls)
+end)
+
+H.test("review ignores a normal-buffer floating window and reuses a tiled window", function()
+  local root = H.repo()
+  local checkpoint, review = fresh(root)
+  H.write(root .. "/tracked.txt", "working\n")
+  local ui = test_tab()
+  local float_buf = vim.api.nvim_create_buf(false, false)
+  local float_win = vim.api.nvim_open_win(float_buf, true, {
+    relative = "editor",
+    row = 1,
+    col = 1,
+    width = 20,
+    height = 2,
+    style = "minimal",
+  })
+
+  choose_first(function() return review.open("pending", root) end)
+  local current = review.current()
+  local result = {
+    review_win = current and current.win or nil,
+    float_buf = vim.api.nvim_win_get_buf(float_win),
+    tiled_buf = vim.api.nvim_win_get_buf(ui.win),
+  }
+
+  cleanup_ui(ui, review)
+  if vim.api.nvim_win_is_valid(float_win) then
+    pcall(vim.api.nvim_win_close, float_win, true)
+  end
+  if vim.api.nvim_buf_is_valid(float_buf) then
+    pcall(vim.api.nvim_buf_delete, float_buf, { force = true })
+  end
+  checkpoint.cleanup()
+  H.eq(ui.win, result.review_win)
+  H.eq(float_buf, result.float_buf)
+  H.eq(vim.fs.normalize(root .. "/tracked.txt"), vim.fs.normalize(vim.api.nvim_buf_get_name(result.tiled_buf)))
 end)

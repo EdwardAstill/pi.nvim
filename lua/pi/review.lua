@@ -1,6 +1,7 @@
 local M = {}
 
 local current
+local request_generation = 0
 
 local function notify_error(value)
   local message = type(value) == "table" and value.message or tostring(value or "unknown error")
@@ -29,9 +30,19 @@ local function call_minidiff(method, ...)
   return true
 end
 
+local function expanded_lhs(lhs)
+  local ok, expanded = pcall(vim.api.nvim_replace_termcodes, lhs, true, true, true)
+  return ok and expanded or lhs
+end
+
+local function mapping_lhs(mapping)
+  return mapping.lhsraw or expanded_lhs(mapping.lhs)
+end
+
 local function mapping_for(buf, lhs)
+  local target = expanded_lhs(lhs)
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
-    if mapping.lhs == lhs then
+    if mapping_lhs(mapping) == target then
       return mapping
     end
   end
@@ -45,6 +56,8 @@ local function restore_mapping(buf, mapping)
     expr = mapping.expr == 1,
     nowait = mapping.nowait == 1,
     remap = mapping.noremap == 0,
+    replace_keycodes = mapping.replace_keycodes == 1,
+    script = mapping.script == 1,
     silent = mapping.silent == 1,
   })
 end
@@ -53,16 +66,20 @@ local function map(review, lhs, callback, desc)
   if not lhs or not review.buf then
     return
   end
-  review.mappings[#review.mappings + 1] = {
-    lhs = lhs,
-    previous = mapping_for(review.buf, lhs),
-    desc = desc,
-  }
+  local previous = mapping_for(review.buf, lhs)
   vim.keymap.set("n", lhs, callback, {
     buffer = review.buf,
     silent = true,
     desc = desc,
   })
+  local installed = mapping_for(review.buf, lhs)
+  review.mappings[#review.mappings + 1] = {
+    lhs = installed and installed.lhs or expanded_lhs(lhs),
+    raw_lhs = installed and mapping_lhs(installed) or expanded_lhs(lhs),
+    callback = installed and installed.callback or callback,
+    previous = previous,
+    desc = desc,
+  }
 end
 
 local function remove_mappings(review)
@@ -71,8 +88,8 @@ local function remove_mappings(review)
   end
   for index = #review.mappings, 1, -1 do
     local mapping = review.mappings[index]
-    local installed = mapping_for(review.buf, mapping.lhs)
-    if installed and installed.desc == mapping.desc then
+    local installed = mapping_for(review.buf, mapping.raw_lhs)
+    if installed and installed.desc == mapping.desc and installed.callback == mapping.callback then
       pcall(vim.keymap.del, "n", mapping.lhs, { buffer = review.buf })
       if mapping.previous then
         pcall(restore_mapping, review.buf, mapping.previous)
@@ -90,6 +107,10 @@ end
 
 local function ordinary_window(win)
   if not vim.api.nvim_win_is_valid(win) or winfixbuf(win) then
+    return false
+  end
+  local config = vim.api.nvim_win_get_config(win)
+  if config.relative and config.relative ~= "" then
     return false
   end
   local buf = vim.api.nvim_win_get_buf(win)
@@ -273,19 +294,24 @@ function M.current()
 end
 
 function M.close()
+  request_generation = request_generation + 1
   local review = current
   if not review then
     return false
   end
+  if review.attached and review.buf and vim.api.nvim_buf_is_valid(review.buf) then
+    if not call_minidiff("detach", review.buf) then
+      return false
+    end
+  end
   current = nil
   remove_mappings(review)
-  if review.attached and review.buf and vim.api.nvim_buf_is_valid(review.buf) then
-    return call_minidiff("detach", review.buf)
-  end
   return true
 end
 
 function M.open(scope, cwd)
+  request_generation = request_generation + 1
+  local request = request_generation
   scope = scope or "pending"
   cwd = normalize_cwd(cwd or require("pi.project").resolve_cwd())
   local checkpoint = require("pi.checkpoint")
@@ -317,11 +343,15 @@ function M.open(scope, cwd)
       return string.format("%s %s  +%d -%d", file.status, file.path, file.additions, file.deletions)
     end,
   }, function(file)
+    if request ~= request_generation then
+      return
+    end
+    request_generation = request_generation + 1
     if not file then
       return
     end
-    if current then
-      M.close()
+    if current and not M.close() then
+      return
     end
     local opened, open_err = open_file(cwd, state, view, file)
     if not opened then
