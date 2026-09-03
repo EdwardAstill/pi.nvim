@@ -1,5 +1,21 @@
 local H = require("tests.helpers")
 
+local function read_bytes(path)
+  local stat = assert(vim.uv.fs_stat(path))
+  local file = assert(vim.uv.fs_open(path, "r", 438))
+  local data = assert(vim.uv.fs_read(file, stat.size, 0))
+  assert(vim.uv.fs_close(file))
+  return data
+end
+
+local function real_index_path(root)
+  local path = H.git(root, { "rev-parse", "--git-path", "index" })
+  if not vim.startswith(path, "/") then
+    path = root .. "/" .. path
+  end
+  return vim.fs.normalize(path)
+end
+
 H.test("snapshot captures the worktree without changing the real index", function()
   local Git = require("pi.review.git")
   local root = H.repo()
@@ -8,7 +24,9 @@ H.test("snapshot captures the worktree without changing the real index", functio
   H.git(root, { "commit", "-qm", "add deleted file" })
   H.write(root .. "/staged.txt", "staged\n")
   H.git(root, { "add", "staged.txt" })
+  local index_path = real_index_path(root)
   local real_index_before = H.git(root, { "write-tree" })
+  local real_index_bytes_before = read_bytes(index_path)
   H.write(root .. "/tracked.txt", "worktree\n")
   vim.fn.delete(root .. "/deleted.txt")
   H.write(root .. "/untracked.txt", "untracked\n")
@@ -16,6 +34,7 @@ H.test("snapshot captures the worktree without changing the real index", functio
   H.eq(nil, err)
   local tree = assert(git:snapshot())
   H.eq(real_index_before, H.git(root, { "write-tree" }))
+  H.eq(real_index_bytes_before, read_bytes(index_path), "snapshot must preserve the real index byte-for-byte")
   H.eq("worktree", H.git(root, { "show", tree .. ":tracked.txt" }))
   H.eq("untracked", H.git(root, { "show", tree .. ":untracked.txt" }))
   H.eq("staged", H.git(root, { "show", tree .. ":staged.txt" }))

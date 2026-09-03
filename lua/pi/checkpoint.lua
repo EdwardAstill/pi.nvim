@@ -1,6 +1,7 @@
 local M = {}
 
-local current
+local states = {}
+local active_root
 
 local function err(kind, operation, message)
   return { kind = kind, operation = operation, message = message }
@@ -10,31 +11,49 @@ local function normalized_cwd(cwd)
   return vim.fs.normalize(vim.fn.fnamemodify(cwd, ":p"))
 end
 
-function M.state()
-  return current
+function M.state(cwd)
+  local root = cwd and normalized_cwd(cwd) or active_root
+  return root and states[root] or nil
 end
 
-function M.cleanup()
-  if current and current.git then
-    current.git:cleanup()
+function M.cleanup(cwd)
+  if cwd then
+    local root = normalized_cwd(cwd)
+    local state = states[root]
+    if state and state.git then
+      state.git:cleanup()
+    end
+    states[root] = nil
+    if active_root == root then
+      active_root = nil
+    end
+    return
   end
-  current = nil
+
+  for root, state in pairs(states) do
+    if state.git then
+      state.git:cleanup()
+    end
+    states[root] = nil
+  end
+  active_root = nil
 end
 
 M.reset = M.cleanup
 
 function M.ensure(cwd)
   cwd = normalized_cwd(cwd)
-  if current and current.cwd == cwd then
-    return current, nil
+  if states[cwd] then
+    active_root = cwd
+    return states[cwd], nil
   end
-  M.cleanup()
 
   local git, git_err = require("pi.review.git").new(cwd)
   if not git then
     if git_err and git_err.kind == "not_git" then
-      current = { cwd = cwd, available = false, turn_number = 0 }
-      return current, nil
+      states[cwd] = { cwd = cwd, available = false, turn_number = 0 }
+      active_root = cwd
+      return states[cwd], nil
     end
     return nil, git_err
   end
@@ -44,7 +63,7 @@ function M.ensure(cwd)
     git:cleanup()
     return nil, snapshot_err
   end
-  current = {
+  states[cwd] = {
     cwd = cwd,
     git_root = git.root,
     git = git,
@@ -54,7 +73,8 @@ function M.ensure(cwd)
     turn_base_tree = nil,
     turn_number = 0,
   }
-  return current, nil
+  active_root = cwd
+  return states[cwd], nil
 end
 
 function M.start_turn(cwd)
@@ -74,11 +94,12 @@ function M.start_turn(cwd)
   return true, nil
 end
 
-function M.view(scope)
-  if not current then
+function M.view(scope, cwd)
+  local state = M.state(cwd)
+  if not state then
     return nil, err("state", "view", "no Pi review session")
   end
-  if not current.available then
+  if not state.available then
     return nil, err("not_git", "view", "review requires a Git worktree")
   end
 
@@ -86,25 +107,25 @@ function M.view(scope)
   local read_only = false
   if scope == nil or scope == "pending" then
     scope = "pending"
-    base = current.accepted_tree
+    base = state.accepted_tree
   elseif scope == "turn" then
-    if not current.turn_base_tree then
+    if not state.turn_base_tree then
       return nil, err("no_turn", "view", "no turn checkpoint")
     end
-    base = current.turn_base_tree
+    base = state.turn_base_tree
     read_only = true
   elseif scope == "session" then
-    base = current.session_start_tree
+    base = state.session_start_tree
     read_only = true
   else
     return nil, err("scope", "view", "unknown review scope: " .. tostring(scope))
   end
 
-  local tree, snapshot_err = current.git:snapshot()
+  local tree, snapshot_err = state.git:snapshot()
   if not tree then
     return nil, snapshot_err
   end
-  local files, files_err = current.git:changed_files(base, tree)
+  local files, files_err = state.git:changed_files(base, tree)
   if not files then
     return nil, files_err
   end
@@ -117,15 +138,16 @@ function M.view(scope)
   }, nil
 end
 
-local function require_available(operation)
-  if not current or not current.available then
+local function require_available(operation, cwd)
+  local state = M.state(cwd)
+  if not state or not state.available then
     return nil, err("not_git", operation, "review requires a Git worktree")
   end
-  return current, nil
+  return state, nil
 end
 
-function M.accept_file(path)
-  local state, state_err = require_available("accept_file")
+function M.accept_file(path, cwd)
+  local state, state_err = require_available("accept_file", cwd)
   if not state then
     return nil, state_err
   end
@@ -141,8 +163,8 @@ function M.accept_file(path)
   return true, nil
 end
 
-function M.accept_text(path, data)
-  local state, state_err = require_available("accept_text")
+function M.accept_text(path, data, cwd)
+  local state, state_err = require_available("accept_text", cwd)
   if not state then
     return nil, state_err
   end
@@ -178,8 +200,8 @@ function M.accept_text(path, data)
   return true, nil
 end
 
-function M.accept_all()
-  local state, state_err = require_available("accept_all")
+function M.accept_all(cwd)
+  local state, state_err = require_available("accept_all", cwd)
   if not state then
     return nil, state_err
   end
@@ -191,37 +213,38 @@ function M.accept_all()
   return true, nil
 end
 
-function M.reject_file(path)
-  local state, state_err = require_available("reject_file")
+function M.reject_file(path, cwd)
+  local state, state_err = require_available("reject_file", cwd)
   if not state then
     return nil, state_err
   end
   return state.git:restore_path(state.accepted_tree, path)
 end
 
-function M.status()
-  if not current then
+function M.status(cwd)
+  local state = M.state(cwd)
+  if not state then
     return nil, err("state", "status", "no Pi review session")
   end
   local result = {
-    cwd = current.cwd,
-    git_root = current.git_root,
-    available = current.available,
-    turn_number = current.turn_number,
+    cwd = state.cwd,
+    git_root = state.git_root,
+    available = state.available,
+    turn_number = state.turn_number,
     pending_files = 0,
     pending_hunks = 0,
   }
-  if not current.available then
+  if not state.available then
     return result, nil
   end
-  local view, view_err = M.view("pending")
+  local view, view_err = M.view("pending", cwd)
   if not view then
     return nil, view_err
   end
   result.pending_files = #view.files
   for _, file in ipairs(view.files) do
     if not file.binary then
-      local count, count_err = current.git:hunk_count(view.base_tree, view.current_tree, file.path)
+      local count, count_err = state.git:hunk_count(view.base_tree, view.current_tree, file.path)
       if count == nil then
         return nil, count_err
       end
