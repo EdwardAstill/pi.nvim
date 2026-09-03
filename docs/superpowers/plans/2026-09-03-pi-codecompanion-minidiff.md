@@ -69,11 +69,11 @@ delete `lua/pi/terminal.lua`, `lua/pi/context.lua`, and terminal tests.
 
 **Interfaces:** Produce pure hunk splicing/serialization helpers and MiniDiff `attach`, `detach`, `refresh`, `accept_hunk`, `reject_hunk`, and navigation operations.
 
-- [ ] Add failing tests for every MiniDiff hunk shape, empty files, final-newline handling, repeated/multiple acceptance, source configuration restoration, and accept-all refresh.
-- [ ] Run `make test` and confirm failures.
-- [ ] Implement line splicing from MiniDiff hunk coordinates and a per-buffer source using checkpoint reference text.
-- [ ] Run `make test`.
-- [ ] Commit as `feat: add accepted-tree MiniDiff source`.
+- [x] Add failing tests for every MiniDiff hunk shape, empty files, final-newline handling, repeated/multiple acceptance, source configuration restoration, and accept-all refresh.
+- [x] Run `make test` and confirm failures.
+- [x] Implement line splicing from MiniDiff hunk coordinates and a per-buffer source using checkpoint reference text.
+- [x] Run `make test`.
+- [x] Commit as `feat: add accepted-tree MiniDiff source`.
 
 ### Task 5: Replace the two-pane reviewer
 
