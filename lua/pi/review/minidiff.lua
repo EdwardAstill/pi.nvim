@@ -63,15 +63,76 @@ local function apply_hunks(buf_id, hunks)
   return M.refresh(buf_id)
 end
 
+local function transition(buf_id, config, should_enable)
+  local inspected, data = pcall(MiniDiff.get_buf_data, buf_id)
+  if not inspected then
+    return nil, "failed to inspect MiniDiff state: " .. tostring(data)
+  end
+  if data then
+    local disabled, disable_error = pcall(MiniDiff.disable, buf_id)
+    if not disabled then
+      return nil, "failed to disable MiniDiff: " .. tostring(disable_error)
+    end
+    local verified, remaining = pcall(MiniDiff.get_buf_data, buf_id)
+    if not verified then
+      return nil, "failed to verify MiniDiff disable: " .. tostring(remaining)
+    end
+    if remaining then
+      return nil, "MiniDiff remained enabled after disable"
+    end
+  end
+
+  local configured, config_error = pcall(function()
+    vim.b[buf_id].minidiff_config = config
+  end)
+  if not configured then
+    return nil, "failed to restore MiniDiff config: " .. tostring(config_error)
+  end
+  if not should_enable then
+    return true
+  end
+
+  local enabled, enable_error = pcall(MiniDiff.enable, buf_id)
+  if not enabled then
+    return nil, "failed to enable MiniDiff: " .. tostring(enable_error)
+  end
+  local verified, enabled_data = pcall(MiniDiff.get_buf_data, buf_id)
+  if not verified then
+    return nil, "failed to verify MiniDiff enable: " .. tostring(enabled_data)
+  end
+  if not enabled_data then
+    return nil, "MiniDiff did not enable buffer"
+  end
+  return true
+end
+
 local function restore(buf_id, attachment)
-  if MiniDiff.get_buf_data(buf_id) then
-    MiniDiff.disable(buf_id)
+  local pi_config = vim.deepcopy(vim.b[buf_id].minidiff_config)
+  local inspected, pi_data = pcall(MiniDiff.get_buf_data, buf_id)
+  if not inspected then
+    return nil, "failed to inspect Pi MiniDiff state: " .. tostring(pi_data)
   end
-  vim.b[buf_id].minidiff_config = attachment.previous_config
-  attachments[buf_id] = nil
-  if attachment.was_enabled then
-    MiniDiff.enable(buf_id)
+
+  local restored, restore_error = transition(buf_id, attachment.previous_config, attachment.was_enabled)
+  if restored then
+    attachments[buf_id] = nil
+    return true
   end
+
+  local rolled_back, rollback_error = transition(buf_id, pi_config, pi_data ~= nil)
+  if not rolled_back then
+    return nil, restore_error .. "; failed to roll back Pi MiniDiff state: " .. rollback_error
+  end
+  return nil, restore_error
+end
+
+local function attach_failure(buf_id, attachment, attach_error)
+  local restored, restore_error = restore(buf_id, attachment)
+  if restored then
+    return nil, attach_error
+  end
+  local message = type(attach_error) == "table" and attach_error.message or tostring(attach_error)
+  return nil, err("attach", message .. "; failed to restore previous MiniDiff state: " .. restore_error)
 end
 
 function M.attach(buf_id, ctx)
@@ -113,12 +174,10 @@ function M.attach(buf_id, ctx)
   MiniDiff.enable(buf_id)
   if attachment.source_error then
     local source_error = attachment.source_error
-    restore(buf_id, attachment)
-    return nil, source_error
+    return attach_failure(buf_id, attachment, source_error)
   end
   if not MiniDiff.get_buf_data(buf_id) then
-    restore(buf_id, attachment)
-    return nil, err("attach", "MiniDiff did not enable buffer")
+    return attach_failure(buf_id, attachment, err("attach", "MiniDiff did not enable buffer"))
   end
   return true
 end
@@ -285,7 +344,10 @@ function M.detach(buf_id)
   if not attachment then
     return nil, err("detach", "buffer is not attached to Pi review")
   end
-  restore(buf_id, attachment)
+  local restored, restore_error = restore(buf_id, attachment)
+  if not restored then
+    return nil, err("detach", restore_error)
+  end
   return true
 end
 

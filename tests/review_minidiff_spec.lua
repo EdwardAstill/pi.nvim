@@ -214,6 +214,99 @@ H.test("MiniDiff detach restores exact buffer-local config and enabled state", f
   checkpoint.cleanup()
 end)
 
+local function detach_retry_case(failure_mode)
+  local root = H.repo()
+  local mini = fake_minidiff()
+  local checkpoint, review_diff = fresh(root, mini)
+  local buf_id = buffer(root .. "/tracked.txt", { "working" })
+  local mode = "success"
+  local old_source = {
+    name = "old-source",
+    attach = function(source_buf)
+      if mode == "throw" then
+        error("prior source attach threw")
+      end
+      if mode == "false" then
+        return false
+      end
+      mini.set_ref_text(source_buf, "old reference\n")
+    end,
+  }
+  local previous_config = { source = old_source, delay = { text_change = 43 } }
+  vim.b[buf_id].minidiff_config = previous_config
+  mini.enable(buf_id)
+  assert(review_diff.attach(buf_id, {
+    cwd = root,
+    path = "tracked.txt",
+    scope = "pending",
+    base_tree = checkpoint.state(root).accepted_tree,
+    read_only = false,
+  }))
+
+  mode = failure_mode
+  local first_called, first_result, first_error = pcall(review_diff.detach, buf_id)
+  local first_data = mini.get_buf_data(buf_id)
+  local after_first = {
+    config_source = vim.b[buf_id].minidiff_config.source.name,
+    enabled = first_data ~= nil,
+    enabled_source = first_data and first_data.config.source.name or nil,
+    reference = first_data and first_data.ref_text or nil,
+  }
+
+  mode = "success"
+  local retry_called, retry_result, retry_error = pcall(review_diff.detach, buf_id)
+  local final_data = mini.get_buf_data(buf_id)
+  local final = {
+    config = vim.deepcopy(vim.b[buf_id].minidiff_config),
+    enabled = final_data ~= nil,
+    enabled_source = final_data and final_data.config.source.name or nil,
+    reference = final_data and final_data.ref_text or nil,
+  }
+
+  mini.disable(buf_id)
+  delete_buffers(buf_id)
+  checkpoint.cleanup()
+  return {
+    first_called = first_called,
+    first_result = first_result,
+    first_error = first_error,
+    after_first = after_first,
+    retry_called = retry_called,
+    retry_result = retry_result,
+    retry_error = retry_error,
+    final = final,
+    previous_config = previous_config,
+  }
+end
+
+local function assert_detach_is_retryable(failure_mode, failure_text)
+  local result = detach_retry_case(failure_mode)
+
+  H.eq(true, result.first_called)
+  H.eq(nil, result.first_result)
+  H.eq("detach", result.first_error.operation)
+  assert(tostring(result.first_error.message):find(failure_text, 1, true))
+  H.eq("pi-accepted-tree", result.after_first.config_source)
+  H.eq(true, result.after_first.enabled)
+  H.eq("pi-accepted-tree", result.after_first.enabled_source)
+  H.eq("base\n", result.after_first.reference)
+  H.eq(true, result.retry_called)
+  H.eq(true, result.retry_result, vim.inspect(result.retry_error))
+  H.eq(nil, result.retry_error)
+  H.eq(result.previous_config, result.final.config)
+  H.eq(true, result.final.enabled)
+  H.eq("old-source", result.final.enabled_source)
+  H.eq("old reference\n", result.final.reference)
+end
+
+H.test("MiniDiff detach retries after a previous source attach throws", function()
+  assert_detach_is_retryable("throw", "prior source attach threw")
+end)
+
+H.test("MiniDiff detach retries after a previous source declines attachment", function()
+  assert_detach_is_retryable("false", "did not enable")
+end)
+
 H.test("MiniDiff attach failure restores the prior source and does not stay attached", function()
   local root = H.repo()
   local mini = fake_minidiff()
