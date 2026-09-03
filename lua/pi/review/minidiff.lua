@@ -75,6 +75,9 @@ local function restore(buf_id, attachment)
 end
 
 function M.attach(buf_id, ctx)
+  if attachments[buf_id] then
+    return nil, err("attach", "buffer is already attached to Pi review")
+  end
   local attachment = vim.deepcopy(ctx)
   attachment.previous_config = vim.deepcopy(vim.b[buf_id].minidiff_config)
   attachment.was_enabled = MiniDiff.get_buf_data(buf_id) ~= nil
@@ -110,6 +113,10 @@ function M.attach(buf_id, ctx)
     restore(buf_id, attachment)
     return nil, source_error
   end
+  if not MiniDiff.get_buf_data(buf_id) then
+    restore(buf_id, attachment)
+    return nil, err("attach", "MiniDiff did not enable buffer")
+  end
   return true
 end
 
@@ -126,9 +133,17 @@ local function hunk_at_line(hunks, line)
     local from = hunk.buf_count == 0 and math.max(hunk.buf_start, 1) or hunk.buf_start
     local to = hunk.buf_count == 0 and from or hunk.buf_start + hunk.buf_count - 1
     if from <= line and line <= to then
-      return from, to
+      return from, to, hunk
     end
   end
+end
+
+local function hunk_reaches_eof(buf_id, attachment, hunk)
+  local buffer_count = vim.api.nvim_buf_line_count(buf_id)
+  local reference_count = #require("pi.review.patch").data_to_lines(attachment.ref_data)
+  local reaches_buffer_eof = hunk.buf_start + hunk.buf_count - 1 >= buffer_count
+  local reaches_reference_eof = hunk.ref_start + hunk.ref_count - 1 >= reference_count
+  return reaches_buffer_eof or reaches_reference_eof
 end
 
 function M.accept_hunk(buf_id)
@@ -168,12 +183,15 @@ function M.reject_hunk(buf_id)
   if not data then
     return nil, err("reject_hunk", "MiniDiff is not enabled for buffer")
   end
-  local line_start, line_end = hunk_at_line(data.hunks, current_line(buf_id))
+  local line_start, line_end, hunk = hunk_at_line(data.hunks, current_line(buf_id))
   if not line_start then
     return nil, err("reject_hunk", "cursor is not on a hunk")
   end
 
   local endofline = vim.bo[buf_id].endofline
+  if hunk_reaches_eof(buf_id, attachment, hunk) then
+    endofline = attachment.ref_data:sub(-1) == "\n"
+  end
   local ok, reset_err = pcall(MiniDiff.do_hunks, buf_id, "reset", {
     line_start = line_start,
     line_end = line_end,
