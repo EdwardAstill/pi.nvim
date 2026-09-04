@@ -365,16 +365,34 @@ function M.abort(cwd)
   return true
 end
 
-local function connected_chat(cwd)
+local function is_connected(connection)
+  if not connection then
+    return false
+  end
+  if type(connection.is_connected) ~= "function" then
+    return true
+  end
+  local checked, connected = pcall(connection.is_connected, connection)
+  return checked and connected == true
+end
+
+---Resolve the project chat, optionally waiting for the ACP session to connect.
+---CodeCompanion establishes the connection asynchronously after the composer
+---opens (the handshake can take a few seconds), so callers that run straight
+---after opening the composer should pass a wait budget instead of failing
+---immediately.
+local function connected_chat(cwd, wait_ms)
   local chat = M.get(cwd)
   if not chat or not chat.acp_connection then
     return nil
   end
-  if type(chat.acp_connection.is_connected) == "function" then
-    local checked, connected = pcall(chat.acp_connection.is_connected, chat.acp_connection)
-    if not checked or not connected then
-      return nil
-    end
+  if wait_ms and wait_ms > 0 and not is_connected(chat.acp_connection) then
+    vim.wait(wait_ms, function()
+      return is_connected(chat.acp_connection)
+    end, 100)
+  end
+  if not is_connected(chat.acp_connection) then
+    return nil
   end
   return chat
 end
@@ -618,7 +636,7 @@ local function scoped_model_picker(chat, patterns)
 end
 
 function M.model(cwd, model)
-  local chat = connected_chat(cwd)
+  local chat = connected_chat(cwd, 3000)
   if not chat then
     return false
   end
@@ -643,7 +661,7 @@ function M.model(cwd, model)
 end
 
 function M.thinking(cwd, level)
-  local chat = connected_chat(cwd)
+  local chat = connected_chat(cwd, 3000)
   local thinking = find_session_option(chat, "thought_level")
   if not thinking then
     return false
@@ -675,7 +693,7 @@ end
 ---@param cwd string
 ---@return boolean, string|nil
 function M.cycle_model(cwd)
-  local chat = connected_chat(cwd)
+  local chat = connected_chat(cwd, 3000)
   if not chat then
     return false, "no connected Pi chat"
   end
@@ -706,7 +724,7 @@ end
 ---@param cwd string
 ---@return boolean, string|nil
 function M.cycle_thinking(cwd)
-  local chat = connected_chat(cwd)
+  local chat = connected_chat(cwd, 3000)
   if not chat then
     return false, "no connected Pi chat"
   end
