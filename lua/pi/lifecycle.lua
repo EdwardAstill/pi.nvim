@@ -277,6 +277,19 @@ local function session_for_chat(bufnr)
   return state.get_by_bufnr(bufnr)
 end
 
+---Refresh which-key after codecompanion-ui creates its input buffer.
+---The layout is built inside a non-nested User autocmd, so the BufEnter event
+---which-key normally uses to discover a buffer is suppressed on first open.
+local function refresh_which_key_input(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local ok, which_key_buf = pcall(require, "which-key.buf")
+  if ok and type(which_key_buf.get) == "function" then
+    pcall(which_key_buf.get, { buf = bufnr, mode = "n", update = true })
+  end
+end
+
 local function recover_draft(bufnr)
   local loaded, codecompanion = pcall(require, "codecompanion")
   if not loaded or not is_pi_chat(codecompanion.buf_get_chat(bufnr)) then
@@ -334,6 +347,27 @@ function M.setup()
           bridge.register(chat, cwd)
         end
       end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("User", {
+    group = group,
+    pattern = "CodeCompanionChatOpened",
+    callback = function(args)
+      local bufnr = (args.data or {}).bufnr
+      if not bufnr then
+        return
+      end
+      -- codecompanion-ui creates and focuses the input window from another
+      -- callback for this same event. Defer until every callback has finished.
+      vim.schedule(function()
+        local loaded, codecompanion = pcall(require, "codecompanion")
+        local chat = loaded and codecompanion.buf_get_chat(bufnr) or nil
+        local session = is_pi_chat(chat) and session_for_chat(bufnr) or nil
+        if session then
+          refresh_which_key_input(session.input_bufnr)
+        end
+      end)
     end,
   })
 

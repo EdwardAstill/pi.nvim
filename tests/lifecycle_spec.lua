@@ -642,6 +642,40 @@ H.test("restored CodeCompanion submission returns the draft to codecompanion-ui"
   end)
 end)
 
+H.test("opened composer refreshes which-key for its dynamically created input buffer", function()
+  local chat = fake_chat()
+  local input_buf = vim.api.nvim_create_buf(false, true)
+  local refreshed
+  with_modules(lifecycle_stubs({
+    codecompanion = {
+      buf_get_chat = function(bufnr)
+        return bufnr == chat.bufnr and chat or nil
+      end,
+    },
+    ["codecompanion-ui.state"] = {
+      get_by_bufnr = function(bufnr)
+        return bufnr == chat.bufnr and { input_bufnr = input_buf, chat_bufnr = chat.bufnr } or nil
+      end,
+    },
+    ["which-key.buf"] = {
+      get = function(opts)
+        refreshed = opts
+      end,
+    },
+  }), function()
+    local lifecycle = require("pi.lifecycle")
+    lifecycle.setup()
+
+    vim.api.nvim_exec_autocmds("User", {
+      pattern = "CodeCompanionChatOpened",
+      data = { bufnr = chat.bufnr },
+    })
+    H.truthy(vim.wait(200, function() return refreshed ~= nil end))
+  end)
+
+  H.eq({ buf = input_buf, mode = "n", update = true }, refreshed)
+end)
+
 H.test("draft recovery hook installs when codecompanion-ui loads after setup", function()
   local chat = fake_chat()
   local input = {
