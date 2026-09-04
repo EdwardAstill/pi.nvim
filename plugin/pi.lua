@@ -50,6 +50,9 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
     pi.toggle()
   elseif subcmd == "focus" then
     pi.focus()
+  elseif subcmd == "fullscreen" then
+    local arg = args[2]
+    pi.fullscreen(arg == "on" and true or arg == "off" and false or nil)
   elseif subcmd == "ask" then
     local text = table.concat(vim.list_slice(args, 2), " ")
     pi.ask(text ~= "" and text or nil)
@@ -65,9 +68,11 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
   elseif subcmd == "abort" then
     pi.abort()
   elseif subcmd == "model" then
-    pi.model()
+    local model = table.concat(vim.list_slice(args, 2), " ")
+    pi.model(model ~= "" and model or nil)
   elseif subcmd == "thinking" then
-    pi.thinking()
+    local level = table.concat(vim.list_slice(args, 2), " ")
+    pi.thinking(level ~= "" and level or nil)
   elseif subcmd == "checkpoint" then
     pi.checkpoint()
   elseif subcmd == "review" then
@@ -86,10 +91,10 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
     end
   elseif subcmd == "reject" then
     local target = args[2]
-    if vim.tbl_contains({ "hunk", "file" }, target) then
+    if vim.tbl_contains({ "hunk", "file", "all" }, target) then
       pi.reject(target)
     else
-      vim.notify("Pi: reject target must be hunk or file", vim.log.levels.WARN)
+      vim.notify("Pi: reject target must be hunk, file, or all", vim.log.levels.WARN)
     end
   elseif subcmd == "status" then
     pi.status()
@@ -107,6 +112,7 @@ end, {
     local subcmds = {
       "toggle",
       "focus",
+      "fullscreen",
       "ask",
       "prompt",
       "select",
@@ -141,12 +147,20 @@ end, {
     local choices = {
       review = { "turn", "session" },
       accept = { "hunk", "file", "all" },
-      reject = { "hunk", "file" },
+      reject = { "hunk", "file", "all" },
+      fullscreen = { "on", "off" },
     }
     if choices[parts[2]] then
       return vim.tbl_filter(function(s)
         return s:find(arg_lead, 1, true) == 1
       end, choices[parts[2]])
+    end
+    if vim.tbl_contains({ "model", "thinking" }, parts[2]) then
+      local ok, bridge = pcall(require, "pi.codecompanion")
+      local values = ok and bridge.completions(require("pi.project").resolve_cwd(), parts[2]) or {}
+      return vim.tbl_filter(function(s)
+        return s and s:find(arg_lead, 1, true) == 1
+      end, values)
     end
     return {}
   end,

@@ -175,3 +175,34 @@ H.test("setup installs lifecycle hooks and the public controls delegate by proje
     { "stop", root },
   }, calls)
 end)
+
+H.test("setup maps model and thinking cycling as global leader keys", function()
+  local root = H.tmpdir()
+  local calls = {}
+  local bridge = {
+    capture_context = function() return { bufnr = 1, is_visual = false } end,
+    cycle_model = function(cwd) calls.model = cwd end,
+    cycle_thinking = function(cwd) calls.thinking = cwd end,
+  }
+  local stubs = base_stubs(root, bridge)
+  stubs["pi.config"].opts.keymaps = {
+    cycle_model = "<leader>qm",
+    cycle_thinking = "<leader>qt",
+  }
+
+  with_pi(stubs, function(pi)
+    pi._setup_keymaps()
+
+    local model_map = vim.fn.maparg("<leader>qm", "n", false, true)
+    local thinking_map = vim.fn.maparg("<leader>qt", "n", false, true)
+    H.truthy(type(model_map) == "table" and model_map.callback)
+    H.truthy(type(thinking_map) == "table" and thinking_map.callback)
+    model_map.callback()
+    thinking_map.callback()
+    H.eq(root, calls.model)
+    H.eq(root, calls.thinking)
+
+    vim.keymap.del("n", "<leader>qm")
+    vim.keymap.del("n", "<leader>qt")
+  end)
+end)

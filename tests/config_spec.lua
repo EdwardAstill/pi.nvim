@@ -4,7 +4,7 @@ H.test("native frontend defaults contain only CodeCompanion integration settings
   package.loaded["pi.config"] = nil
   local config = require("pi.config")
   H.eq(nil, config.opts.project.cwd)
-  H.eq({ adapter = "pi", command = { "pi-acp" } }, config.opts.codecompanion)
+  H.eq({ adapter = "pi", command = { "pi-acp" }, thinking_winbar = true }, config.opts.codecompanion)
   H.eq(true, config.opts.compatibility.legacy_context_tokens)
   H.eq(nil, config.opts.terminal)
   H.eq(true, config.opts.review.enabled)

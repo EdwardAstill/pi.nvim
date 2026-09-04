@@ -7,6 +7,7 @@ for _, spec in ipairs({
   "checkpoint_spec",
   "codecompanion_spec",
   "codecompanion_ui_spec",
+  "winbar_spec",
   "lifecycle_spec",
   "init_spec",
   "review_spec",

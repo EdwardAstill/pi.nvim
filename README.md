@@ -18,6 +18,9 @@ There is no embedded-terminal frontend or fallback.
 ## Features
 
 - One reusable Pi chat per normalized project directory.
+- Full-screen chat toggle that expands the chat and composer to the whole editor.
+- A composer winbar chip showing the current Pi thinking level instead of
+  codecompanion-ui's always-"Default" mode chip (`codecompanion.thinking_winbar`).
 - A normal Neovim composer with motions, operators, registers, undo, paste,
   completion, and user mappings.
 - CodeCompanion context for buffers, selections, diagnostics, quickfix lists,
@@ -74,7 +77,7 @@ pi.nvim lifecycle
 ```
 
 | Component | Responsibility |
-|---|---|
+| --- | --- |
 | CodeCompanion.nvim | Chat buffers, messages, streaming, tools, sessions, context, adapter lifecycle, and model controls |
 | codecompanion-ui.nvim | Split layout and editable input composer |
 | pi-acp | ACP server and translation to `pi --mode rpc` |
@@ -205,11 +208,12 @@ page.
 2. Run `:Pi` or press `<leader>pt` to open the project chat.
 3. Write a request in the composer and submit it using codecompanion-ui's
    normal submit mapping.
-4. Use `:Pi model` or `:Pi thinking` to change the active ACP session settings.
-5. After Pi edits files, run `:Pi review`.
-6. Pick a file, navigate with `[h` and `]h`, then accept or reject hunks with
+4. Use `:Pi model`, `:Pi model <model-id>`, `:Pi thinking`, or `:Pi thinking <level>` to change the active ACP session settings.
+5. Press `<leader>pT` (or run `:Pi fullscreen`) to expand the chat to the whole screen; press it again to restore the normal width.
+6. After Pi edits files, run `:Pi review`.
+7. Pick a file, navigate with `[h` and `]h`, then accept or reject hunks with
    `a` and `r`.
-7. Press `q` to leave the review. Run `:Pi stop` when the project chat and ACP
+8. Press `q` to leave the review. Run `:Pi stop` when the project chat and ACP
    process are no longer needed.
 
 For a context-first prompt, select text visually and press `<leader>pa`. The
@@ -242,7 +246,7 @@ is replaced the next time it is requested.
 These operations have intentionally different effects:
 
 | Operation | Effect |
-|---|---|
+| --- | --- |
 | `:Pi` / `:Pi toggle` | Show or hide the UI; preserve the chat, draft, and ACP process |
 | `:Pi focus` | Restore the UI if needed and focus the composer |
 | `:Pi abort` | Stop the active generation; keep the chat and process |
@@ -256,7 +260,7 @@ for external changes and active review overlays are refreshed.
 CodeCompanion's `#{...}` syntax is canonical:
 
 | Reference | Meaning |
-|---|---|
+| --- | --- |
 | `#{selection}` | Captured visual selection |
 | `#{buffer}` | Current/source buffer |
 | `#{buffers}` | Available buffers |
@@ -272,7 +276,7 @@ adds `#{selection}` or `#{buffer}` to the composer without submitting it.
 For compatibility, pi.nvim currently translates the older prompt tokens:
 
 | Legacy token | CodeCompanion reference |
-|---|---|
+| --- | --- |
 | `@this` | `#{selection}` for a visual selection, otherwise `#{buffer}` |
 | `@buffer` | `#{buffer}` |
 | `@buffers` | `#{buffers}` |
@@ -294,7 +298,7 @@ argument as literal text. A prompt with `submit = true` is sent immediately;
 The defaults are:
 
 | Name | Text | Submit? |
-|---|---|---|
+| --- | --- | --- |
 | `explain` | `Explain @this and its context` | yes |
 | `review` | `Review @this for correctness and readability` | yes |
 | `fix` | `Fix @diagnostics` | yes |
@@ -338,7 +342,7 @@ be corrected and retried.
 The first snapshot for a project initializes three concepts:
 
 | Baseline | Purpose | Changes over time? |
-|---|---|---|
+| --- | --- | --- |
 | `session_start_tree` | Worktree state when checkpoint tracking began | No |
 | `accepted_tree` | State the user has accepted | Yes, on accept actions |
 | `turn_base_tree` | Worktree state immediately before the latest submitted prompt or manual checkpoint | Replaced each turn |
@@ -358,7 +362,7 @@ review is unavailable.
 ### Scopes
 
 | Command | Comparison | Mutable? | Typical use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `:Pi review` | `accepted_tree` to current worktree | Yes | Decide what to keep or undo |
 | `:Pi review turn` | latest `turn_base_tree` to current worktree | No | Audit the latest agent turn |
 | `:Pi review session` | `session_start_tree` to current worktree | No | Audit the whole Pi session |
@@ -432,16 +436,17 @@ exits.
 ## Commands
 
 | Command | Action |
-|---|---|
+| --- | --- |
 | `:Pi` | Toggle the current project's Pi chat |
 | `:Pi toggle` | Toggle the current project's Pi chat |
 | `:Pi focus` | Restore the UI and focus the composer |
+| `:Pi fullscreen [on/off]` | Toggle the chat between full screen and its normal width |
 | `:Pi ask [text]` | Open an editable composer draft with optional text |
 | `:Pi prompt <text-or-name>` | Submit literal text or resolve a configured prompt name |
 | `:Pi select` | Select a named prompt or control action |
 | `:Pi abort` | Abort the active Pi request without closing the chat |
-| `:Pi model` | Open CodeCompanion's model selector for the connected ACP session |
-| `:Pi thinking` | Open CodeCompanion's ACP thinking-level selector |
+| `:Pi model [model-id]` | Open CodeCompanion's model selector, or set a model directly for the connected ACP session |
+| `:Pi thinking [level]` | Open CodeCompanion's ACP thinking-level selector, or set a thinking level directly |
 | `:Pi checkpoint` | Save project buffers and capture a manual turn baseline |
 | `:Pi review` | Open mutable pending review against `accepted_tree` |
 | `:Pi review turn` | Open read-only latest-turn review |
@@ -462,9 +467,10 @@ command-line completion for their supported arguments.
 ### Global defaults
 
 | Mapping | Modes | Action |
-|---|---|---|
+| --- | --- | --- |
 | `<leader>pt` | Normal | Toggle project chat |
-| `<leader>pa` | Normal, Visual | Capture context and open `@this: ` as a draft |
+| `<leader>pT` | Normal | Toggle full-screen chat |
+| `<leader>pa` | Normal, Visual | Capture context and open `@this:` as a draft |
 | `<leader>px` | Normal, Visual | Open the prompt/control selector |
 | `<leader>pp` | Normal, Visual | Add buffer or selection context to the composer |
 | `<leader>pq` | Normal | Abort the active request |
@@ -472,7 +478,7 @@ command-line completion for their supported arguments.
 ### Pending-review defaults
 
 | Mapping | Action |
-|---|---|
+| --- | --- |
 | `[h` | Previous hunk |
 | `]h` | Next hunk |
 | `a` | Accept hunk |
@@ -500,6 +506,7 @@ require("pi").setup({
     -- timeout = 30000, -- ACP timeout in milliseconds
     -- Without a global pi-acp installation:
     -- command = { "npx", "-y", "pi-acp" },
+    -- thinking_winbar = true, -- thinking level chip in the composer winbar
   },
 
   compatibility = {
@@ -541,10 +548,13 @@ require("pi").setup({
 
   keymaps = {
     toggle = "<leader>pt",
+    fullscreen = "<leader>pT",
     ask = "<leader>pa",
     select = "<leader>px",
     prompt_this = "<leader>pp",
     abort = "<leader>pq",
+    cycle_model = "<leader>pm",
+    cycle_thinking = "<leader>pn",
   },
 
   events = {
@@ -556,10 +566,12 @@ require("pi").setup({
 ### Option details
 
 | Option | Meaning |
-|---|---|
+| --- | --- |
 | `codecompanion.adapter` | Name used to resolve the registered CodeCompanion ACP adapter |
 | `codecompanion.command` | Non-empty argv list used to start pi-acp; shell strings are not accepted |
 | `codecompanion.timeout` | Optional ACP request timeout forwarded to the adapter; defaults to 30 seconds |
+| `codecompanion.thinking_winbar` | Show the Pi thinking level at the top of the composer input instead of codecompanion-ui's mode chip, which always reads "Default" for Pi; default `true` |
+| `keymaps` | Global Pi controls installed by `setup()`; `false` removes a mapping. Includes `toggle`, `fullscreen`, `ask`, `select`, `prompt_this`, `abort` (stop processing), `cycle_model`, and `cycle_thinking` |
 | `compatibility.legacy_context_tokens` | Translate legacy `@...` tokens to CodeCompanion context references |
 | `prompts` | Named `{ text, submit }` prompt definitions used by `:Pi prompt` and `:Pi select` |
 | `project.cwd` | Fixed project directory, or dynamic Neovim cwd when `nil` |
@@ -579,16 +591,17 @@ All user-facing operations target the current resolved project and report
 errors through `vim.notify`.
 
 | Function | Return | Description |
-|---|---|---|
+| --- | --- | --- |
 | `require("pi").setup(opts?)` | none | Validate configuration, install lifecycle hooks, and create configured mappings |
 | `require("pi").toggle()` | boolean | Show or hide the project chat |
 | `require("pi").focus()` | boolean | Restore and focus the composer |
+| `require("pi").fullscreen(on?)` | boolean | Toggle full-screen chat; pass `true`/`false` to force a direction |
 | `require("pi").ask(text?, opts?)` | boolean | Open a draft; set `opts.submit = true` to submit it |
 | `require("pi").prompt(text, opts?)` | boolean | Resolve a named prompt or submit literal text; `opts.submit = false` opens a draft |
 | `require("pi").select()` | boolean | Open the prompt/control selector |
 | `require("pi").abort()` | boolean | Abort the active request |
-| `require("pi").model()` | boolean | Open the ACP model picker |
-| `require("pi").thinking()` | boolean | Open the ACP thinking picker |
+| `require("pi").model(model?)` | boolean | Open the ACP model picker, or set a model id directly |
+| `require("pi").thinking(level?)` | boolean | Open the ACP thinking picker, or set a thinking level directly |
 | `require("pi").send_context()` | boolean | Insert the current buffer/selection context token into the composer |
 | `require("pi").checkpoint()` | boolean | Save and capture a manual turn checkpoint |
 | `require("pi").review(scope?)` | boolean | Open `pending`, `turn`, or `session` review |
@@ -713,7 +726,9 @@ editor cwd changes.
 - A managed CodeCompanion chat can switch away from the Pi adapter, but it must
   start a fresh chat rather than switch the same managed chat back to Pi.
 - Model and thinking pickers are feature-detected compatibility calls into
-  CodeCompanion until it exposes stable public callable pickers.
+  CodeCompanion until it exposes stable public callable pickers. Direct
+  `:Pi model <model-id>` and `:Pi thinking <level>` updates use ACP session
+  configuration when the connected Pi session exposes those options.
 - There is no terminal frontend, custom chat renderer, custom model picker, or
   non-CodeCompanion fallback.
 

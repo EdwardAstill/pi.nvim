@@ -66,6 +66,7 @@ end
 function M.setup(opts)
   require("pi.config").setup(opts)
   require("pi.lifecycle").setup()
+  require("pi.winbar").install()
   M._setup_keymaps()
 end
 
@@ -79,6 +80,14 @@ end
 ---@return boolean
 function M.focus()
   return frontend_result("focus", project_cwd())
+end
+
+--- Toggle the project chat between its normal width and the full screen.
+--- Opens the chat first when it is hidden.
+---@param on? boolean Force fullscreen on/off; omit to toggle
+---@return boolean
+function M.fullscreen(on)
+  return frontend_result("fullscreen", project_cwd(), on)
 end
 
 --- Open the native composer with optional initial text.
@@ -154,12 +163,24 @@ function M.abort()
   return frontend_result("abort", project_cwd())
 end
 
-function M.model()
-  return frontend_result("model", project_cwd())
+---@param model? string Model id. When omitted, opens the model picker.
+function M.model(model)
+  return frontend_result("model", project_cwd(), model)
 end
 
-function M.thinking()
-  return frontend_result("thinking", project_cwd())
+---@param level? string Thinking-level id. When omitted, opens the thinking picker.
+function M.thinking(level)
+  return frontend_result("thinking", project_cwd(), level)
+end
+
+--- Cycle to the next allowed model.
+function M.cycle_model()
+  return frontend_result("cycle_model", project_cwd())
+end
+
+--- Cycle to the next thinking level supported by the current model.
+function M.cycle_thinking()
+  return frontend_result("cycle_thinking", project_cwd())
 end
 
 function M.stop()
@@ -289,6 +310,9 @@ function M._setup_keymaps()
   if keymaps.toggle then
     vim.keymap.set("n", keymaps.toggle, M.toggle, { silent = true, desc = "Pi: Toggle chat" })
   end
+  if keymaps.fullscreen then
+    vim.keymap.set("n", keymaps.fullscreen, function() M.fullscreen() end, { silent = true, desc = "Pi: Toggle fullscreen chat" })
+  end
   if keymaps.ask then
     vim.keymap.set("n", keymaps.ask, function() M.ask("@this: ") end, { silent = true, desc = "Pi: Ask about code" })
     vim.keymap.set("v", keymaps.ask, function() M.ask("@this: ") end, { silent = true, desc = "Pi: Ask about selection" })
@@ -301,6 +325,12 @@ function M._setup_keymaps()
   end
   if keymaps.abort then
     vim.keymap.set("n", keymaps.abort, M.abort, { silent = true, desc = "Pi: Abort" })
+  end
+  if keymaps.cycle_model then
+    vim.keymap.set("n", keymaps.cycle_model, M.cycle_model, { silent = true, desc = "Pi: Cycle model" })
+  end
+  if keymaps.cycle_thinking then
+    vim.keymap.set("n", keymaps.cycle_thinking, M.cycle_thinking, { silent = true, desc = "Pi: Cycle thinking level" })
   end
 end
 

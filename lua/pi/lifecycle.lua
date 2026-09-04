@@ -326,6 +326,7 @@ function M.setup()
       local chat = ok and codecompanion.buf_get_chat(data.bufnr) or nil
       if is_pi_chat(chat) then
         install_input_compatibility()
+        pcall(require("pi.winbar").install)
         local cwd = chat._pi_cwd or require("pi.project").resolve_cwd()
         M.attach(chat, cwd)
         local bridge_ok, bridge = pcall(require, "pi.codecompanion")

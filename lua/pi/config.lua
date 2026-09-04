@@ -10,6 +10,8 @@
 ---@class pi.Config.CodeCompanion
 ---@field adapter string
 ---@field command string[]
+---@field models string[]|false|nil Model patterns restricting the model picker; nil reads Pi's enabledModels, false disables filtering
+---@field thinking_winbar? boolean Show the thinking level in the composer input winbar instead of the mode chip; default true
 
 ---@class pi.Config.Compatibility
 ---@field legacy_context_tokens boolean
@@ -46,6 +48,12 @@ M.defaults = {
   codecompanion = {
     adapter = "pi",
     command = { "pi-acp" },
+    -- Restrict the model picker to these model patterns. nil (default) reads
+    -- Pi's enabledModels cycle list from its settings files; false shows all.
+    models = nil,
+    -- Show the thinking level at the top of the composer input instead of
+    -- codecompanion-ui's mode chip, which always reads "Default" for Pi.
+    thinking_winbar = true,
   },
 
   compatibility = {
@@ -65,10 +73,13 @@ M.defaults = {
 
   keymaps = {
     toggle = "<leader>pt",
+    fullscreen = "<leader>pT",
     ask = "<leader>pa",
     select = "<leader>px",
     prompt_this = "<leader>pp",
     abort = "<leader>pq",
+    cycle_model = "<leader>pm",
+    cycle_thinking = "<leader>pn",
   },
 
   events = {
@@ -125,6 +136,11 @@ local function validate(opts)
   vim.validate({
     ["codecompanion.adapter"] = { opts.codecompanion.adapter, "string" },
     ["codecompanion.command"] = { opts.codecompanion.command, command_is_valid, "non-empty list of strings" },
+    ["codecompanion.models"] = {
+      opts.codecompanion.models,
+      function(value) return value == nil or value == false or command_is_valid(value) end,
+      "list of model patterns, false, or nil",
+    },
     ["compatibility.legacy_context_tokens"] = { opts.compatibility.legacy_context_tokens, "boolean" },
     ["events.reload"] = { opts.events.reload, "boolean" },
     ["project.cwd"] = {

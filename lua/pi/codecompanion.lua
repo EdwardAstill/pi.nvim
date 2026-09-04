@@ -1,6 +1,7 @@
 local M = {}
 
 local chats = {}
+local fullscreen = {}
 
 local function normalize(cwd)
   local path = vim.fs.normalize(vim.fn.fnamemodify(cwd, ":p"))
@@ -378,10 +379,258 @@ local function connected_chat(cwd)
   return chat
 end
 
-function M.model(cwd)
+local function find_session_option(chat, wanted)
+  if not chat or not chat.acp_connection or type(chat.acp_connection.get_config_options) ~= "function" then
+    return nil
+  end
+  local fetched, options = pcall(chat.acp_connection.get_config_options, chat.acp_connection)
+  if not fetched then
+    return nil
+  end
+  for _, option in ipairs(options or {}) do
+    if option.category == wanted or option.id == wanted then
+      return option
+    end
+  end
+  return nil
+end
+
+local function refresh_winbar(chat)
+  local ok, winbar = pcall(require, "pi.winbar")
+  if ok and type(winbar.refresh) == "function" then
+    pcall(winbar.refresh, chat)
+  end
+end
+
+local function set_session_option(chat, option, value)
+  if not option or not value or value == "" or type(chat.acp_connection.set_config_option) ~= "function" then
+    return false
+  end
+  local ok, changed = pcall(chat.acp_connection.set_config_option, chat.acp_connection, option.id, value)
+  if not ok or not changed then
+    return false
+  end
+  if chat.update_metadata then
+    pcall(chat.update_metadata, chat)
+  end
+  refresh_winbar(chat)
+  return true
+end
+
+local function set_model(chat, model)
+  local changed
+  if chat.acp_connection and type(chat.acp_connection.set_model) == "function" then
+    local ok, result = pcall(chat.acp_connection.set_model, chat.acp_connection, model)
+    changed = ok and result
+    if changed and chat.update_metadata then
+      pcall(chat.update_metadata, chat)
+    end
+    if changed then
+      refresh_winbar(chat)
+    end
+  elseif chat.change_model then
+    local ok, result = pcall(chat.change_model, chat, { model = model })
+    changed = ok and result ~= false
+    if changed then
+      refresh_winbar(chat)
+    end
+  else
+    changed = set_session_option(chat, find_session_option(chat, "model"), model)
+  end
+  return changed == true
+end
+
+local function glob_to_lua(glob)
+  local out = {}
+  for i = 1, #glob do
+    local char = glob:sub(i, i)
+    if char == "*" then
+      out[#out + 1] = ".*"
+    elseif char == "?" then
+      out[#out + 1] = "."
+    else
+      out[#out + 1] = char:gsub("(%W)", "%%%1")
+    end
+  end
+  return "^" .. table.concat(out) .. "$"
+end
+
+---Match a Pi --models-style pattern against a model id.
+---Supports exact provider/model references, bare model ids, and * / ? globs.
+local function model_pattern_matches(pattern, model_id)
+  local id = model_id:lower()
+  local pat = vim.trim(pattern or ""):lower()
+  if pat == "" or id == "" then
+    return false
+  end
+  if id == pat then
+    return true
+  end
+  if not pat:find("/", 1, true) and id:match("([^/]+)$") == pat then
+    return true
+  end
+  if pat:find("[*?]", 1, false) then
+    return id:find(glob_to_lua(pat)) ~= nil
+  end
+  return false
+end
+
+local function read_enabled_models(cwd)
+  local candidates = {
+    root_for(cwd) .. "/.pi/settings.json",
+    vim.fn.expand("~/.pi/agent/settings.json"),
+  }
+  for _, path in ipairs(candidates) do
+    local ok, lines = pcall(vim.fn.readfile, path)
+    if ok and type(lines) == "table" and #lines > 0 then
+      local decoded, data = pcall(vim.json.decode, table.concat(lines, "\n"))
+      if decoded and type(data) == "table" and type(data.enabledModels) == "table" then
+        local models = {}
+        for _, value in ipairs(data.enabledModels) do
+          if type(value) == "string" and vim.trim(value) ~= "" then
+            models[#models + 1] = value
+          end
+        end
+        if #models > 0 then
+          return models
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---Resolve the scoped model patterns restricting model selection.
+---@return string[]|nil nil means no restriction
+local function scoped_patterns(cwd)
+  local config = require("pi.config").opts.codecompanion or {}
+  if config.models == false then
+    return nil
+  end
+  if type(config.models) == "table" and #config.models > 0 then
+    return config.models
+  end
+  return read_enabled_models(cwd)
+end
+
+local function model_id(model)
+  if type(model) ~= "table" then
+    return model
+  end
+  return model.modelId or model.id or model.name
+end
+
+---Filter models to the scoped patterns, ordered by pattern order.
+local function filter_models(models, patterns)
+  if not patterns or #patterns == 0 then
+    return models
+  end
+  local out = {}
+  for _, pattern in ipairs(patterns) do
+    for _, model in ipairs(models) do
+      if model_pattern_matches(pattern, model_id(model)) then
+        local duplicate = false
+        for _, existing in ipairs(out) do
+          if model_id(existing) == model_id(model) then
+            duplicate = true
+            break
+          end
+        end
+        if not duplicate then
+          out[#out + 1] = model
+        end
+      end
+    end
+  end
+  return out
+end
+
+local function model_allowed(patterns, model)
+  for _, pattern in ipairs(patterns) do
+    if model_pattern_matches(pattern, model) then
+      return true
+    end
+  end
+  return false
+end
+
+local function option_values(option)
+  if not option then
+    return {}
+  end
+  local ok, acp = pcall(require, "codecompanion.acp")
+  local values
+  if ok and type(acp.flatten_config_options) == "function" then
+    local flattened
+    ok, flattened = pcall(acp.flatten_config_options, option.options or {})
+    values = ok and flattened or nil
+  else
+    values = option.options or {}
+  end
+  local out = {}
+  for _, value in ipairs(values or {}) do
+    if value.value then
+      out[#out + 1] = value.value
+    end
+  end
+  return out
+end
+
+local function available_models(chat)
+  if chat.acp_connection and type(chat.acp_connection.get_models) == "function" then
+    local ok, models = pcall(chat.acp_connection.get_models, chat.acp_connection)
+    if ok and models and models.availableModels then
+      return models.availableModels, models.currentModelId
+    end
+  end
+  local values = option_values(find_session_option(chat, "model"))
+  local available = {}
+  for _, id in ipairs(values) do
+    available[#available + 1] = { modelId = id, name = id }
+  end
+  return available, nil
+end
+
+local function scoped_model_picker(chat, patterns)
+  local available, current = available_models(chat)
+  local filtered = filter_models(available, patterns)
+  if #filtered == 0 then
+    return false, "no available models match the scoped model list"
+  end
+  local items = {}
+  for _, model in ipairs(filtered) do
+    local id = model_id(model)
+    local label = (id == current and "* " or "  ")
+      .. (model.name and model.name ~= id and (model.name .. " (" .. id .. ")") or id)
+    items[#items + 1] = { id = id, label = label }
+  end
+  vim.ui.select(items, {
+    prompt = "Select Model",
+    kind = "codecompanion.nvim",
+    format_item = function(item) return item.label end,
+  }, function(selected)
+    if not selected or selected.id == current then
+      return
+    end
+    set_model(chat, selected.id)
+  end)
+  return true
+end
+
+function M.model(cwd, model)
   local chat = connected_chat(cwd)
   if not chat then
     return false
+  end
+  local patterns = scoped_patterns(cwd)
+  if model and model ~= "" then
+    if patterns and not model_allowed(patterns, model) then
+      return false, "model is not in the scoped model list"
+    end
+    return set_model(chat, model)
+  end
+  if patterns then
+    return scoped_model_picker(chat, patterns)
   end
   -- CodeCompanion does not currently export a callable model picker. Keep its
   -- own picker behind this feature-detected compatibility boundary.
@@ -393,24 +642,14 @@ function M.model(cwd)
   return selected
 end
 
-function M.thinking(cwd)
+function M.thinking(cwd, level)
   local chat = connected_chat(cwd)
-  if not chat or type(chat.acp_connection.get_config_options) ~= "function" then
-    return false
-  end
-  local fetched, options = pcall(chat.acp_connection.get_config_options, chat.acp_connection)
-  if not fetched then
-    return false
-  end
-  local thinking
-  for _, option in ipairs(options or {}) do
-    if option.category == "thought_level" or option.id == "thought_level" then
-      thinking = option
-      break
-    end
-  end
+  local thinking = find_session_option(chat, "thought_level")
   if not thinking then
     return false
+  end
+  if level and level ~= "" then
+    return set_session_option(chat, thinking, level)
   end
   -- As above, delegate the UI to CodeCompanion while no public callable
   -- session-option picker is available.
@@ -423,7 +662,183 @@ function M.thinking(cwd)
     return false
   end
   local selected = pcall(picker.show_values, picker, thinking)
+  if selected then
+    -- The selection callback runs later; redraw the winbar once it applies.
+    vim.schedule(function()
+      refresh_winbar(chat)
+    end)
+  end
   return selected
+end
+
+---Cycle to the next available model (respecting the scoped model list).
+---@param cwd string
+---@return boolean, string|nil
+function M.cycle_model(cwd)
+  local chat = connected_chat(cwd)
+  if not chat then
+    return false, "no connected Pi chat"
+  end
+  local available, current = available_models(chat)
+  local filtered = filter_models(available, scoped_patterns(cwd))
+  if #filtered == 0 then
+    return false, "no available models match the scoped model list"
+  end
+  local index = 1
+  for position, model in ipairs(filtered) do
+    if model_id(model) == current then
+      index = position
+      break
+    end
+  end
+  local next_model = filtered[(index % #filtered) + 1]
+  if model_id(next_model) == current then
+    return false, "only one model available"
+  end
+  if not set_model(chat, model_id(next_model)) then
+    return false, "failed to switch model"
+  end
+  vim.notify("Pi: model → " .. model_id(next_model))
+  return true, nil
+end
+
+---Cycle to the next thinking level supported by the current model.
+---@param cwd string
+---@return boolean, string|nil
+function M.cycle_thinking(cwd)
+  local chat = connected_chat(cwd)
+  if not chat then
+    return false, "no connected Pi chat"
+  end
+  local thinking = find_session_option(chat, "thought_level")
+  if not thinking then
+    return false, "model does not support thinking levels"
+  end
+  local values = option_values(thinking)
+  if #values < 2 then
+    return false, "no other thinking level available"
+  end
+  local index = 1
+  for position, value in ipairs(values) do
+    if value == thinking.currentValue then
+      index = position
+      break
+    end
+  end
+  local next_level = values[(index % #values) + 1]
+  if not set_session_option(chat, thinking, next_level) then
+    return false, "failed to set thinking level"
+  end
+  vim.notify("Pi: thinking → " .. next_level)
+  return true, nil
+end
+
+---Set the Pi session display name (sent as an immediate /name command).
+---@param cwd string
+---@param name string
+---@return boolean, string|nil
+function M.session_name(cwd, name)
+  name = vim.trim(name or "")
+  if name == "" then
+    return false, "session name is empty"
+  end
+  local chat = M.get(cwd)
+  if not chat then
+    return false, "no project Pi chat"
+  end
+  append_prompt(chat, "/name " .. name)
+  chat:submit()
+  return true, nil
+end
+
+function M.completions(cwd, kind)
+  local chat = connected_chat(cwd)
+  if not chat then
+    return {}
+  end
+  if kind == "model" then
+    local available = available_models(chat)
+    local out = {}
+    for _, model in ipairs(available) do
+      out[#out + 1] = model_id(model)
+    end
+    return filter_models(out, scoped_patterns(cwd))
+  end
+  if kind == "thinking" then
+    return option_values(find_session_option(chat, "thought_level"))
+  end
+  return {}
+end
+
+local function chat_window(chat)
+  local ok, state = pcall(require, "codecompanion-ui.state")
+  local session = ok and type(state.get_by_bufnr) == "function" and state.get_by_bufnr(chat.bufnr) or nil
+  local winid = session and session.chat_winid or nil
+  if not winid or not vim.api.nvim_win_is_valid(winid) then
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) == chat.bufnr then
+        winid = win
+        break
+      end
+    end
+  end
+  if winid and vim.api.nvim_win_is_valid(winid) then
+    return winid
+  end
+  return nil
+end
+
+local function configured_chat_width()
+  local ok, config = pcall(require, "codecompanion-ui.config")
+  local width = ok and config.config and config.config.chat and config.config.chat.width or nil
+  if type(width) ~= "number" or width <= 0 or width > 1 then
+    width = 0.35
+  end
+  return width
+end
+
+---Toggle the project chat between its normal column width and the full screen.
+---@param cwd string
+---@param on? boolean Force fullscreen on/off; omit to toggle
+---@return boolean, string|nil
+function M.fullscreen(cwd, on)
+  local ui, ui_err = ui_exports()
+  if not ui then
+    return false, ui_err
+  end
+  local root = root_for(cwd)
+  local chat = M.get(root)
+  if chat and chat.ui and type(chat.ui.is_visible) == "function" and not chat.ui:is_visible() then
+    require("codecompanion").restore(chat.bufnr)
+  elseif not chat then
+    local ensured, ensure_err = M.ensure(root)
+    if not ensured then
+      return false, ensure_err
+    end
+  end
+  chat = M.get(root)
+  if not chat then
+    return false, "project chat is unavailable"
+  end
+  local winid = chat_window(chat)
+  if not winid then
+    return false, "chat window is unavailable"
+  end
+  if on == nil then
+    on = not fullscreen[root]
+  end
+  local width
+  if on then
+    width = vim.o.columns
+  else
+    width = math.max(1, math.floor(vim.o.columns * configured_chat_width()))
+  end
+  local resized, resize_err = pcall(vim.api.nvim_win_set_width, winid, width)
+  if not resized then
+    return false, resize_err
+  end
+  fullscreen[root] = on or nil
+  return true
 end
 
 function M.stop(cwd)
