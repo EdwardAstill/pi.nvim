@@ -383,15 +383,17 @@ end
 ---immediately.
 local function connected_chat(cwd, wait_ms)
   local chat = M.get(cwd)
-  if not chat or not chat.acp_connection then
+  if not chat then
     return nil
   end
   if wait_ms and wait_ms > 0 and not is_connected(chat.acp_connection) then
     vim.wait(wait_ms, function()
-      return is_connected(chat.acp_connection)
+      chat = M.get(cwd)
+      return chat and is_connected(chat.acp_connection)
     end, 100)
   end
-  if not is_connected(chat.acp_connection) then
+  chat = M.get(cwd)
+  if not chat or not is_connected(chat.acp_connection) then
     return nil
   end
   return chat
