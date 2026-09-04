@@ -221,10 +221,11 @@ H.test("abort and stop control only the selected project chat", function()
   end)
 end)
 
-H.test("model and thinking controls use CodeCompanion's ACP pickers", function()
+H.test("model and thinking controls use CodeCompanion's ACP pickers and direct values", function()
   local cc = fake_codecompanion()
   local selected_model
   local selected_options
+  local changed = {}
   with_modules({
     codecompanion = cc,
     ["pi.lifecycle"] = { attach = function() return true end },
@@ -243,6 +244,11 @@ H.test("model and thinking controls use CodeCompanion's ACP pickers", function()
       end,
     },
   }, function()
+    -- Pin model scoping off so the fallback pickers are exercised regardless
+    -- of any enabledModels in the developer's real ~/.pi/agent/settings.json.
+    local config = require("pi.config")
+    local saved_models = config.opts.codecompanion.models
+    config.opts.codecompanion.models = false
     local bridge = require("pi.codecompanion")
     local root = H.tmpdir()
     local chat = assert(bridge.ensure(root, { hidden = true }))
@@ -250,17 +256,31 @@ H.test("model and thinking controls use CodeCompanion's ACP pickers", function()
       is_connected = function() return true end,
       get_config_options = function()
         return {
-          { id = "model", category = "model" },
-          { id = "thought_level", category = "thought_level" },
+          { id = "model", category = "model", type = "select" },
+          { id = "thought_level", category = "thought_level", type = "select" },
         }
       end,
+      set_config_option = function(_, id, value)
+        changed[#changed + 1] = { id, value }
+        return true
+      end,
     }
+    chat.change_model = function(_, args)
+      changed[#changed + 1] = { "model", args.model }
+    end
 
     H.eq(true, bridge.model(root))
     H.eq(true, bridge.thinking(root))
+    H.eq(true, bridge.model(root, "provider/model"))
+    H.eq(true, bridge.thinking(root, "high"))
     H.eq(chat, selected_model)
     H.eq(chat, selected_options.chat)
     H.eq("thought_level", selected_options.option.id)
+    H.eq({
+      { "model", "provider/model" },
+      { "thought_level", "high" },
+    }, changed)
+    config.opts.codecompanion.models = saved_models
   end)
 end)
 

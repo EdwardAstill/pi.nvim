@@ -417,7 +417,52 @@ end
 
 function M.reject(target)
   local review = current
-  if not review or review.read_only then
+  if review and review.read_only then
+    return false
+  end
+  if target == "all" then
+    local cwd = review and review.cwd or normalize_cwd(require("pi.project").resolve_cwd())
+    local view, view_err = require("pi.checkpoint").view("pending", cwd)
+    if not view then
+      notify_error(view_err)
+      return false
+    end
+    if #view.files > 0 then
+      local choice = vim.fn.confirm(
+        string.format("Reject all %d changed files?", #view.files),
+        "&Reject\n&Cancel",
+        2
+      )
+      if choice ~= 1 then
+        return false
+      end
+    end
+    local rejected = 0
+    for _, file in ipairs(view.files) do
+      local ok, action_err = require("pi.checkpoint").reject_file(file.path, cwd)
+      if not ok then
+        notify_error(action_err)
+      else
+        rejected = rejected + 1
+        local buf = loaded_buffer({ path = file.path, cwd = cwd })
+        if buf and vim.api.nvim_buf_is_valid(buf) then
+          local reloaded, reload_err = pcall(vim.api.nvim_buf_call, buf, function()
+            vim.cmd("silent edit!")
+          end)
+          if not reloaded then
+            notify_error(reload_err)
+          end
+        end
+      end
+    end
+    if rejected > 0 then
+      vim.notify(string.format("Pi: rejected %d file%s", rejected, rejected == 1 and "" or "s"))
+    else
+      vim.notify("Pi: nothing to reject")
+    end
+    return call_minidiff("refresh_all", cwd)
+  end
+  if not review then
     return false
   end
   if target == "hunk" then

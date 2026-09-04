@@ -24,6 +24,9 @@ H.test("Pi commands expose checkpoint review actions and status", function()
     focus = function()
       calls[#calls + 1] = { "focus" }
     end,
+    fullscreen = function(on)
+      calls[#calls + 1] = { "fullscreen", on }
+    end,
     ask = function(text)
       calls[#calls + 1] = { "ask", text }
     end,
@@ -36,11 +39,11 @@ H.test("Pi commands expose checkpoint review actions and status", function()
     abort = function()
       calls[#calls + 1] = { "abort" }
     end,
-    model = function()
-      calls[#calls + 1] = { "model" }
+    model = function(model)
+      calls[#calls + 1] = { "model", model }
     end,
-    thinking = function()
-      calls[#calls + 1] = { "thinking" }
+    thinking = function(level)
+      calls[#calls + 1] = { "thinking", level }
     end,
     stop = function()
       calls[#calls + 1] = { "stop" }
@@ -52,12 +55,16 @@ H.test("Pi commands expose checkpoint review actions and status", function()
 
   vim.cmd("Pi")
   vim.cmd("Pi focus")
+  vim.cmd("Pi fullscreen")
+  vim.cmd("Pi fullscreen on")
   vim.cmd("Pi ask refactor this")
   vim.cmd("Pi prompt explain")
   vim.cmd("Pi select")
   vim.cmd("Pi abort")
   vim.cmd("Pi model")
   vim.cmd("Pi thinking")
+  vim.cmd("Pi model provider/model:high")
+  vim.cmd("Pi thinking high")
   vim.cmd("Pi checkpoint")
   vim.cmd("Pi review")
   vim.cmd("Pi review turn")
@@ -73,12 +80,16 @@ H.test("Pi commands expose checkpoint review actions and status", function()
   H.eq({
     { "toggle" },
     { "focus" },
+    { "fullscreen" },
+    { "fullscreen", true },
     { "ask", "refactor this" },
     { "prompt", "explain" },
     { "select" },
     { "abort" },
     { "model" },
     { "thinking" },
+    { "model", "provider/model:high" },
+    { "thinking", "high" },
     { "checkpoint" },
     { "review", nil },
     { "review", "turn" },
@@ -94,6 +105,7 @@ H.test("Pi commands expose checkpoint review actions and status", function()
   H.truthy(vim.tbl_contains(vim.fn.getcompletion("Pi review ", "cmdline"), "turn"))
   local commands = vim.fn.getcompletion("Pi ", "cmdline")
   H.truthy(vim.tbl_contains(commands, "focus"))
+  H.truthy(vim.tbl_contains(commands, "fullscreen"))
   H.truthy(vim.tbl_contains(commands, "model"))
   H.truthy(vim.tbl_contains(commands, "thinking"))
   H.truthy(vim.tbl_contains(commands, "stop"))

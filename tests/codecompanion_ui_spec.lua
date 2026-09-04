@@ -240,3 +240,41 @@ H.test("composer fails explicitly when the codecompanion-ui extension is unavail
     H.truthy(compose_err:find("codecompanion%-ui"))
   end)
 end)
+
+H.test("fullscreen expands and restores the project chat window", function()
+  local cc, calls, state = fake_frontend()
+  with_modules(frontend_stubs(cc, state), function()
+    local bridge = require("pi.codecompanion")
+    local root = H.tmpdir()
+    local chat = assert(bridge.ensure(root, { hidden = true }))
+    local win = vim.api.nvim_open_win(chat.bufnr, false, { split = "right" })
+    H.truthy(win)
+    local columns = vim.o.columns
+
+    H.eq(true, bridge.fullscreen(root))
+    local full = vim.api.nvim_win_get_width(win)
+    H.truthy(full >= columns - 2)
+    H.eq(1, calls.restored)
+
+    H.eq(true, bridge.fullscreen(root))
+    H.eq(math.floor(columns * 0.35), vim.api.nvim_win_get_width(win))
+
+    H.eq(true, bridge.fullscreen(root, true))
+    H.truthy(vim.api.nvim_win_get_width(win) >= columns - 2)
+    H.eq(true, bridge.fullscreen(root, false))
+    H.eq(math.floor(columns * 0.35), vim.api.nvim_win_get_width(win))
+  end)
+end)
+
+H.test("fullscreen fails explicitly when the chat window is unavailable", function()
+  local cc, _, state = fake_frontend()
+  with_modules(frontend_stubs(cc, state), function()
+    local bridge = require("pi.codecompanion")
+    local root = H.tmpdir()
+    assert(bridge.ensure(root, { hidden = true }))
+
+    local ok, err = bridge.fullscreen(root)
+    H.eq(false, ok)
+    H.truthy(err:find("chat window"))
+  end)
+end)
