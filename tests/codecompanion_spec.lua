@@ -310,7 +310,7 @@ H.test("model controls reject an ACP connection that is not ready", function()
   end)
 end)
 
-H.test("model controls wait for the ACP connection", function()
+H.test("model pickers fail cleanly before the ACP connection is ready", function()
   local cc = fake_codecompanion()
   with_modules({
     codecompanion = cc,
@@ -323,4 +323,55 @@ H.test("model controls wait for the ACP connection", function()
     H.eq(false, bridge.model(root))
     H.eq(false, bridge.thinking(root))
   end)
+end)
+
+H.test("cycle model queues without blocking until the ACP session is ready", function()
+  local cc = fake_codecompanion()
+  local changed
+  local notifications = {}
+  local saved_notify = vim.notify
+  with_modules({
+    codecompanion = cc,
+    ["pi.lifecycle"] = { attach = function() return true end },
+  }, function()
+    local config = require("pi.config")
+    local saved_models = config.opts.codecompanion.models
+    config.opts.codecompanion.models = false
+    local bridge = require("pi.codecompanion")
+    local root = H.tmpdir()
+    local chat = assert(bridge.ensure(root, { hidden = true }))
+    vim.notify = function(message)
+      notifications[#notifications + 1] = tostring(message)
+    end
+
+    local started = vim.uv.hrtime()
+    H.eq(true, bridge.cycle_model(root))
+    H.truthy((vim.uv.hrtime() - started) / 1e6 < 500, "cycle_model blocked while the ACP session started")
+    H.eq(nil, changed)
+
+    chat.acp_connection = {
+      is_connected = function() return true end,
+      get_models = function()
+        return {
+          availableModels = {
+            { modelId = "provider/one", name = "One" },
+            { modelId = "provider/two", name = "Two" },
+          },
+          currentModelId = "provider/one",
+        }
+      end,
+      set_model = function(_, model)
+        changed = model
+        return true
+      end,
+    }
+    vim.api.nvim_exec_autocmds("User", { pattern = "CodeCompanionACPSessionPost" })
+    H.truthy(vim.wait(500, function() return changed ~= nil end))
+
+    H.eq("provider/two", changed)
+    H.eq("Pi: waiting for the ACP session to cycle model…", notifications[1])
+    H.eq("Pi: model → provider/two", notifications[2])
+    config.opts.codecompanion.models = saved_models
+  end)
+  vim.notify = saved_notify
 end)

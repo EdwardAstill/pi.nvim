@@ -376,27 +376,104 @@ local function is_connected(connection)
   return checked and connected == true
 end
 
----Resolve the project chat, optionally waiting for the ACP session to connect.
----CodeCompanion establishes the connection asynchronously after the composer
----opens (the handshake can take a few seconds), so callers that run straight
----after opening the composer should pass a wait budget instead of failing
----immediately.
-local function connected_chat(cwd, wait_ms)
+local function connected_chat(cwd)
   local chat = M.get(cwd)
-  if not chat then
-    return nil
-  end
-  if wait_ms and wait_ms > 0 and not is_connected(chat.acp_connection) then
-    vim.wait(wait_ms, function()
-      chat = M.get(cwd)
-      return chat and is_connected(chat.acp_connection)
-    end, 100)
-  end
-  chat = M.get(cwd)
   if not chat or not is_connected(chat.acp_connection) then
     return nil
   end
   return chat
+end
+
+local pending_connection_actions = {}
+local pending_connection_group
+local CONNECTION_ACTION_TIMEOUT_MS = 10000
+
+local function notify_action_error(label, err)
+  local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err or "frontend unavailable")
+  vim.notify("Pi: " .. label .. " failed: " .. message, vim.log.levels.ERROR)
+end
+
+local function run_pending_action(entry)
+  local ok, result, action_err = pcall(entry.action)
+  if not ok then
+    notify_action_error(entry.label, result)
+  elseif not result then
+    notify_action_error(entry.label, action_err)
+  end
+end
+
+local function drain_pending_connection_actions()
+  for key, entry in pairs(pending_connection_actions) do
+    local chat = M.get(entry.cwd)
+    if not chat or chat.bufnr ~= entry.bufnr then
+      pending_connection_actions[key] = nil
+      notify_action_error(entry.label, "chat closed before the ACP session was ready")
+    elseif is_connected(chat.acp_connection) then
+      pending_connection_actions[key] = nil
+      vim.schedule(function()
+        run_pending_action(entry)
+      end)
+    end
+  end
+end
+
+local function clear_pending_connection_actions(bufnr)
+  for key, entry in pairs(pending_connection_actions) do
+    if entry.bufnr == bufnr then
+      pending_connection_actions[key] = nil
+    end
+  end
+end
+
+local function ensure_connection_action_handler()
+  if pending_connection_group then
+    return
+  end
+  pending_connection_group = vim.api.nvim_create_augroup("pi-acp-pending-actions", { clear = true })
+  vim.api.nvim_create_autocmd("User", {
+    group = pending_connection_group,
+    pattern = { "CodeCompanionACPSessionPost", "CodeCompanionACPChatRestored" },
+    callback = function()
+      -- Let CodeCompanion finish the event that establishes the session before
+      -- issuing another ACP request from the queued action.
+      vim.schedule(drain_pending_connection_actions)
+    end,
+  })
+end
+
+local function queue_connection_action(cwd, chat, id, label, action)
+  ensure_connection_action_handler()
+  local key = tostring(chat.bufnr) .. ":" .. id
+  local entry = pending_connection_actions[key]
+  if entry then
+    -- Repeated presses before the session is ready collapse to the latest
+    -- request instead of cycling several times unexpectedly on connect.
+    entry.action = action
+    return true
+  end
+
+  entry = {
+    action = action,
+    bufnr = chat.bufnr,
+    cwd = root_for(cwd),
+    key = key,
+    label = label,
+  }
+  pending_connection_actions[key] = entry
+  vim.notify("Pi: waiting for the ACP session to " .. label .. "…")
+
+  vim.defer_fn(function()
+    if pending_connection_actions[key] ~= entry then
+      return
+    end
+    pending_connection_actions[key] = nil
+    notify_action_error(label, "ACP session did not become ready")
+  end, CONNECTION_ACTION_TIMEOUT_MS)
+
+  -- Covers the race where the session became ready between the caller's check
+  -- and installing the session event handler.
+  vim.schedule(drain_pending_connection_actions)
+  return true
 end
 
 local function find_session_option(chat, wanted)
@@ -638,7 +715,7 @@ local function scoped_model_picker(chat, patterns)
 end
 
 function M.model(cwd, model)
-  local chat = connected_chat(cwd, 3000)
+  local chat = connected_chat(cwd)
   if not chat then
     return false
   end
@@ -663,7 +740,7 @@ function M.model(cwd, model)
 end
 
 function M.thinking(cwd, level)
-  local chat = connected_chat(cwd, 3000)
+  local chat = connected_chat(cwd)
   local thinking = find_session_option(chat, "thought_level")
   if not thinking then
     return false
@@ -695,9 +772,15 @@ end
 ---@param cwd string
 ---@return boolean, string|nil
 function M.cycle_model(cwd)
-  local chat = connected_chat(cwd, 3000)
+  local root = root_for(cwd)
+  local chat = M.get(root)
   if not chat then
-    return false, "no connected Pi chat"
+    return false, "no project Pi chat"
+  end
+  if not is_connected(chat.acp_connection) then
+    return queue_connection_action(root, chat, "cycle_model", "cycle model", function()
+      return M.cycle_model(root)
+    end)
   end
   local available, current = available_models(chat)
   local filtered = filter_models(available, scoped_patterns(cwd))
@@ -726,9 +809,15 @@ end
 ---@param cwd string
 ---@return boolean, string|nil
 function M.cycle_thinking(cwd)
-  local chat = connected_chat(cwd, 3000)
+  local root = root_for(cwd)
+  local chat = M.get(root)
   if not chat then
-    return false, "no connected Pi chat"
+    return false, "no project Pi chat"
+  end
+  if not is_connected(chat.acp_connection) then
+    return queue_connection_action(root, chat, "cycle_thinking", "cycle thinking", function()
+      return M.cycle_thinking(root)
+    end)
   end
   local thinking = find_session_option(chat, "thought_level")
   if not thinking then
@@ -867,6 +956,7 @@ function M.stop(cwd)
   if not chat then
     return false
   end
+  clear_pending_connection_actions(chat.bufnr)
   chats[root] = nil
   chat:close()
   return true
@@ -874,6 +964,9 @@ end
 
 function M.forget(cwd, bufnr)
   local root = root_for(cwd)
+  if bufnr then
+    clear_pending_connection_actions(bufnr)
+  end
   if bufnr == nil or chats[root] == bufnr then
     chats[root] = nil
   end
