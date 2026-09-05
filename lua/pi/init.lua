@@ -82,14 +82,6 @@ function M.focus()
   return frontend_result("focus", project_cwd())
 end
 
---- Toggle the project chat between its normal width and the full screen.
---- Opens the chat first when it is hidden.
----@param on? boolean Force fullscreen on/off; omit to toggle
----@return boolean
-function M.fullscreen(on)
-  return frontend_result("fullscreen", project_cwd(), on)
-end
-
 --- Open the native composer with optional initial text.
 ---@param default_text? string
 ---@param opts? { submit?: boolean, context?: table, context_opts?: table }
@@ -311,7 +303,7 @@ function M._setup_keymaps()
     vim.keymap.set("n", keymaps.toggle, M.toggle, { silent = true, desc = "Pi: Toggle chat" })
   end
   if keymaps.fullscreen then
-    vim.keymap.set("n", keymaps.fullscreen, function() M.fullscreen() end, { silent = true, desc = "Pi: Toggle fullscreen chat" })
+    error("pi.nvim: keymaps.fullscreen has been removed; the chat always opens fullscreen", 2)
   end
   if keymaps.ask then
     vim.keymap.set("n", keymaps.ask, function() M.ask("@this: ") end, { silent = true, desc = "Pi: Ask about code" })

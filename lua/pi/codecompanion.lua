@@ -1,7 +1,8 @@
 local M = {}
 
 local chats = {}
-local fullscreen = {}
+
+local expand_chat -- defined after chat_window; expands the chat to full editor width
 
 local function normalize(cwd)
   local path = vim.fs.normalize(vim.fn.fnamemodify(cwd, ":p"))
@@ -114,6 +115,7 @@ function M.ensure(cwd, opts)
     end
     if opts.restore ~= false and not opts.hidden then
       require("codecompanion").restore(chat.bufnr)
+      expand_chat(chat)
     end
     return chat, nil
   end
@@ -141,6 +143,9 @@ function M.ensure(cwd, opts)
   chat.buffer_context = opts.context or chat.buffer_context
   chats[root] = chat.bufnr
   lifecycle.attach(chat, root)
+  if not opts.hidden then
+    expand_chat(chat)
+  end
   return chat, nil
 end
 
@@ -897,57 +902,15 @@ local function chat_window(chat)
   return nil
 end
 
-local function configured_chat_width()
-  local ok, config = pcall(require, "codecompanion-ui.config")
-  local width = ok and config.config and config.config.chat and config.config.chat.width or nil
-  if type(width) ~= "number" or width <= 0 or width > 1 then
-    width = 0.35
-  end
-  return width
-end
-
----Toggle the project chat between its normal column width and the full screen.
----@param cwd string
----@param on? boolean Force fullscreen on/off; omit to toggle
----@return boolean, string|nil
-function M.fullscreen(cwd, on)
-  local ui, ui_err = ui_exports()
-  if not ui then
-    return false, ui_err
-  end
-  local root = root_for(cwd)
-  local chat = M.get(root)
-  if chat and chat.ui and type(chat.ui.is_visible) == "function" and not chat.ui:is_visible() then
-    require("codecompanion").restore(chat.bufnr)
-  elseif not chat then
-    local ensured, ensure_err = M.ensure(root)
-    if not ensured then
-      return false, ensure_err
-    end
-  end
-  chat = M.get(root)
-  if not chat then
-    return false, "project chat is unavailable"
-  end
+---Expand the chat window to the full editor width. The chat has no side
+---column layout; it always opens fullscreen. Best effort: a failure to resize
+---never blocks the chat from being usable.
+---@param chat table
+function expand_chat(chat)
   local winid = chat_window(chat)
-  if not winid then
-    return false, "chat window is unavailable"
+  if winid then
+    pcall(vim.api.nvim_win_set_width, winid, vim.o.columns)
   end
-  if on == nil then
-    on = not fullscreen[root]
-  end
-  local width
-  if on then
-    width = vim.o.columns
-  else
-    width = math.max(1, math.floor(vim.o.columns * configured_chat_width()))
-  end
-  local resized, resize_err = pcall(vim.api.nvim_win_set_width, winid, width)
-  if not resized then
-    return false, resize_err
-  end
-  fullscreen[root] = on or nil
-  return true
 end
 
 function M.stop(cwd)

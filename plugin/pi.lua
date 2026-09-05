@@ -50,9 +50,6 @@ vim.api.nvim_create_user_command("Pi", function(cmd_opts)
     pi.toggle()
   elseif subcmd == "focus" then
     pi.focus()
-  elseif subcmd == "fullscreen" then
-    local arg = args[2]
-    pi.fullscreen(arg == "on" and true or arg == "off" and false or nil)
   elseif subcmd == "ask" then
     local text = table.concat(vim.list_slice(args, 2), " ")
     pi.ask(text ~= "" and text or nil)
@@ -112,7 +109,6 @@ end, {
     local subcmds = {
       "toggle",
       "focus",
-      "fullscreen",
       "ask",
       "prompt",
       "select",
@@ -148,7 +144,6 @@ end, {
       review = { "turn", "session" },
       accept = { "hunk", "file", "all" },
       reject = { "hunk", "file", "all" },
-      fullscreen = { "on", "off" },
     }
     if choices[parts[2]] then
       return vim.tbl_filter(function(s)

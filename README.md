@@ -18,7 +18,7 @@ There is no embedded-terminal frontend or fallback.
 ## Features
 
 - One reusable Pi chat per normalized project directory.
-- Full-screen chat toggle that expands the chat and composer to the whole editor.
+- Full-screen chat: the chat and composer always open across the whole editor; there is no side-column layout.
 - A composer winbar chip showing the current Pi thinking level instead of
   codecompanion-ui's always-"Default" mode chip (`codecompanion.thinking_winbar`).
 - A normal Neovim composer with motions, operators, registers, undo, paste,
@@ -209,11 +209,10 @@ page.
 3. Write a request in the composer and submit it using codecompanion-ui's
    normal submit mapping.
 4. Use `:Pi model`, `:Pi model <model-id>`, `:Pi thinking`, or `:Pi thinking <level>` to change the active ACP session settings.
-5. Press `<leader>pT` (or run `:Pi fullscreen`) to expand the chat to the whole screen; press it again to restore the normal width.
-6. After Pi edits files, run `:Pi review`.
-7. Pick a file, navigate with `[h` and `]h`, then accept or reject hunks with
+5. After Pi edits files, run `:Pi review`.
+6. Pick a file, navigate with `[h` and `]h`, then accept or reject hunks with
    `a` and `r`.
-8. Press `q` to leave the review. Run `:Pi stop` when the project chat and ACP
+7. Press `q` to leave the review. Run `:Pi stop` when the project chat and ACP
    process are no longer needed.
 
 For a context-first prompt, select text visually and press `<leader>pa`. The
@@ -440,7 +439,6 @@ exits.
 | `:Pi` | Toggle the current project's Pi chat |
 | `:Pi toggle` | Toggle the current project's Pi chat |
 | `:Pi focus` | Restore the UI and focus the composer |
-| `:Pi fullscreen [on/off]` | Toggle the chat between full screen and its normal width |
 | `:Pi ask [text]` | Open an editable composer draft with optional text |
 | `:Pi prompt <text-or-name>` | Submit literal text or resolve a configured prompt name |
 | `:Pi select` | Select a named prompt or control action |
@@ -469,7 +467,6 @@ command-line completion for their supported arguments.
 | Mapping | Modes | Action |
 | --- | --- | --- |
 | `<leader>pt` | Normal | Toggle project chat |
-| `<leader>pT` | Normal | Toggle full-screen chat |
 | `<leader>pa` | Normal, Visual | Capture context and open `@this:` as a draft |
 | `<leader>px` | Normal, Visual | Open the prompt/control selector |
 | `<leader>pp` | Normal, Visual | Add buffer or selection context to the composer |
@@ -548,7 +545,6 @@ require("pi").setup({
 
   keymaps = {
     toggle = "<leader>pt",
-    fullscreen = "<leader>pT",
     ask = "<leader>pa",
     select = "<leader>px",
     prompt_this = "<leader>pp",
@@ -571,7 +567,7 @@ require("pi").setup({
 | `codecompanion.command` | Non-empty argv list used to start pi-acp; shell strings are not accepted |
 | `codecompanion.timeout` | Optional ACP request timeout forwarded to the adapter; defaults to 30 seconds |
 | `codecompanion.thinking_winbar` | Show the Pi thinking level at the top of the composer input instead of codecompanion-ui's mode chip, which always reads "Default" for Pi; default `true` |
-| `keymaps` | Global Pi controls installed by `setup()`; `false` removes a mapping. Includes `toggle`, `fullscreen`, `ask`, `select`, `prompt_this`, `abort` (stop processing), `cycle_model`, and `cycle_thinking` |
+| `keymaps` | Global Pi controls installed by `setup()`; `false` removes a mapping. Includes `toggle`, `ask`, `select`, `prompt_this`, `abort` (stop processing), `cycle_model`, and `cycle_thinking` |
 | `compatibility.legacy_context_tokens` | Translate legacy `@...` tokens to CodeCompanion context references |
 | `prompts` | Named `{ text, submit }` prompt definitions used by `:Pi prompt` and `:Pi select` |
 | `project.cwd` | Fixed project directory, or dynamic Neovim cwd when `nil` |
@@ -583,7 +579,8 @@ require("pi").setup({
 | `events.reload` | Run `:checktime` on `FocusGained` and `BufEnter` for externally changed files |
 
 Passing the removed `terminal` configuration is an error. Configure
-CodeCompanion and pi-acp instead.
+CodeCompanion and pi-acp instead. The removed `keymaps.fullscreen` mapping is
+also an error; the chat always opens fullscreen and `toggle` shows or hides it.
 
 ## Lua API
 
@@ -595,7 +592,6 @@ errors through `vim.notify`.
 | `require("pi").setup(opts?)` | none | Validate configuration, install lifecycle hooks, and create configured mappings |
 | `require("pi").toggle()` | boolean | Show or hide the project chat |
 | `require("pi").focus()` | boolean | Restore and focus the composer |
-| `require("pi").fullscreen(on?)` | boolean | Toggle full-screen chat; pass `true`/`false` to force a direction |
 | `require("pi").ask(text?, opts?)` | boolean | Open a draft; set `opts.submit = true` to submit it |
 | `require("pi").prompt(text, opts?)` | boolean | Resolve a named prompt or submit literal text; `opts.submit = false` opens a draft |
 | `require("pi").select()` | boolean | Open the prompt/control selector |

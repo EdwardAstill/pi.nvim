@@ -88,7 +88,6 @@ Register the Pi ACP adapter and enable codecompanion-ui in CodeCompanion: >lua
     },
     keymaps = {
       toggle = "<leader>pt",
-      fullscreen = "<leader>pT",
       ask = "<leader>pa",
       select = "<leader>px",
       prompt_this = "<leader>pp",
@@ -101,7 +100,8 @@ Register the Pi ACP adapter and enable codecompanion-ui in CodeCompanion: >lua
 <
 
 Use `{ "npx", "-y", "pi-acp" }` as the command if pi-acp is not globally
-installed. Passing the removed `terminal` option is an error.
+installed. Passing the removed `terminal` option or `keymaps.fullscreen`
+mapping is an error; the chat always opens fullscreen.
 
 Keymaps
                                                         *pi-keymaps*
@@ -110,7 +110,6 @@ Keymaps
 configuration above):
 
   toggle          <leader>pt  Show or hide the project chat
-  fullscreen      <leader>pT  Toggle fullscreen chat
   ask             <leader>pa  Ask about the buffer/selection
   select          <leader>px  Prompt/control picker
   prompt_this     <leader>pp  Add context to the composer draft
@@ -126,9 +125,6 @@ Set any entry to a different string to remap it, or to `false` to remove it.
                                                                *:Pi*
   :Pi, :Pi toggle       Show or hide the project chat
   :Pi focus             Focus the codecompanion-ui composer
-  :Pi fullscreen [on/off]
-                       Toggle the chat between full screen and its
-                       normal width
   :Pi ask [text]        Open the composer with optional text
   :Pi prompt {text}     Submit text or a configured prompt name
   :Pi select            Select a configured prompt or control
@@ -148,7 +144,7 @@ Set any entry to a different string to remap it, or to `false` to remove it.
   :Pi stop              Close the project chat and ACP process
 
 The default global keymaps are `<leader>pt`, `<leader>pa`, `<leader>px`,
-`<leader>pp`, `<leader>pq`, and `<leader>pT` (full-screen chat). Set any
+`<leader>pp`, and `<leader>pq`. Set any
 configured keymap to `false` to remove it. Hiding the UI does not stop Pi.
 
 ==============================================================================
@@ -190,7 +186,6 @@ The removed pi.context module does not capture or render context.
   require("pi").setup(opts)        Configure integration and hooks
   require("pi").toggle()           Show or hide the project chat
   require("pi").focus()            Focus the composer
-  require("pi").fullscreen(on)    Toggle or force full-screen chat
   require("pi").ask(text, opts)    Open a draft; opts.submit sends it
   require("pi").prompt(text, opts) Submit text or a prompt name
   require("pi").select()           Open the prompt/control selector

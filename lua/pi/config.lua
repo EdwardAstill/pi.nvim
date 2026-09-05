@@ -73,7 +73,6 @@ M.defaults = {
 
   keymaps = {
     toggle = "<leader>pt",
-    fullscreen = "<leader>pT",
     ask = "<leader>pa",
     select = "<leader>px",
     prompt_this = "<leader>pp",
